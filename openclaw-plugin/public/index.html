@@ -1,0 +1,1468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#D97757">
+<title>AICQ 加密聊天</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/icon-16.png">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--primary:#D97757;--primary-light:#C4613F;--primary-lighter:rgba(217,119,87,0.1);--accent:#D97757;--accent-hover:#C4613F;--accent-light:rgba(217,119,87,0.1);--bg:#FAF9F6;--bg2:#F5F1EB;--bg-warm:#F5F1EB;--bg3:#FFFFFF;--bg-card:#FFFFFF;--text:#2D2A26;--text2:#6B6560;--text-sec:#6B6560;--text-muted:#9B958E;--border:#E8DFD3;--beige:#E8DFD3;--success:#4CAF7D;--green:#4CAF7D;--danger:#E05555;--red:#E05555;--warning:#E5A54B;--amber:#E5A54B;--brown:#8B6F4E;--brown-light:rgba(139,111,78,0.1);--cream:#F0EAE0;--info:#5B8DEF;--blue:#5B8DEF;--purple:#7B6CB0;--bubble-me:#D97757;--bubble-them:#FFFFFF;--shadow-sm:0 1px 3px rgba(45,42,38,0.06);--shadow-md:0 4px 16px rgba(45,42,38,0.08);--shadow-lg:0 8px 32px rgba(45,42,38,0.1);--radius:12px;--radius-sm:8px;--radius-lg:20px;--transition:all 0.25s cubic-bezier(0.4,0,0.2,1)}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased}
+/* Layout */
+.app{display:flex;width:100%;height:100%}
+.right-panel{width:280px;background:var(--bg3);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+.main-panel{flex:1;display:flex;flex-direction:column;min-width:0}
+.chat-area{flex:1;overflow:hidden;display:flex;flex-direction:column}
+/* Right Panel */
+.agent-select{padding:12px;border-bottom:1px solid var(--border)}
+.agent-select select{width:100%;padding:8px 12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:14px;cursor:pointer}
+.action-buttons{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border)}
+.action-btn{flex:1;padding:7px 4px;background:var(--cream);color:var(--text2);border:1px solid var(--border);border-radius:10px;cursor:pointer;font-size:12px;display:flex;flex-direction:column;align-items:center;gap:3px;transition:var(--transition)}
+.action-btn:hover{background:var(--primary);color:#fff;border-color:var(--primary)}
+.action-btn .icon{font-size:18px}
+.list-section{flex:1;overflow-y:auto}
+.list-section h4{padding:10px 12px 6px;color:var(--text-muted);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px}
+.friend-item,.group-item{display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;transition:var(--transition);border-left:3px solid transparent}
+.friend-item:hover,.group-item:hover{background:var(--cream)}
+.friend-item.active,.group-item.active{background:var(--primary-lighter);border-left-color:var(--primary)}
+.avatar{width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,var(--primary),var(--brown));display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;flex-shrink:0;color:#fff;overflow:hidden}
+.avatar img{width:100%;height:100%;object-fit:cover;border-radius:12px}
+.avatar.online{box-shadow:0 0 0 2px var(--success)}
+.info{flex:1;min-width:0}
+.info .name{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.info .status{font-size:11px;color:var(--text2)}
+.badge-online{color:var(--success);font-size:10px}
+.badge-offline{color:var(--text2);font-size:10px}
+.silent-badge{font-size:9px;background:var(--amber);color:#fff;padding:1px 4px;border-radius:4px;margin-left:4px}
+/* Chat Header */
+.chat-header{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;background:var(--bg3)}
+.chat-header .avatar{width:40px;height:40px;font-size:16px}
+.chat-header .info .name{font-size:16px}
+.chat-header .actions{margin-left:auto;display:flex;gap:8px}
+.chat-header .actions button{background:none;border:none;color:var(--text2);cursor:pointer;font-size:18px;padding:4px 8px;border-radius:var(--radius-sm);transition:var(--transition)}
+.chat-header .actions button:hover{background:var(--cream);color:var(--primary)}
+/* Messages */
+.messages-container{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:4px;background:var(--bg2)}
+.load-more{text-align:center;padding:8px;color:var(--text2);font-size:12px;cursor:pointer}
+.load-more:hover{color:var(--primary)}
+.msg-row{display:flex;max-width:75%;gap:8px}
+.msg-row.me{margin-left:auto;flex-direction:row-reverse}
+.msg-row.them{margin-right:auto}
+.msg-bubble{padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.6;word-break:break-word;position:relative;max-width:100%}
+.msg-row.me .msg-bubble{background:var(--bubble-me);color:#fff;border-top-right-radius:4px}
+.msg-row.them .msg-bubble{background:var(--bubble-them);border:1px solid var(--border);color:var(--text);border-top-left-radius:4px}
+.msg-bubble img{max-width:300px;max-height:300px;border-radius:8px;margin-top:6px;cursor:pointer}
+.msg-bubble .file-link{display:flex;align-items:center;gap:6px;padding:6px 10px;background:rgba(255,255,255,.1);border-radius:6px;margin-top:6px;cursor:pointer;color:inherit;text-decoration:none}
+.msg-bubble .file-link:hover{background:rgba(255,255,255,.2)}
+.msg-time{font-size:10px;color:var(--text2);margin-top:4px;text-align:right}
+.msg-row.me .msg-time{color:rgba(255,255,255,0.6)}
+.msg-row.them .msg-time{text-align:left}
+.msg-actions{position:absolute;top:-8px;right:-4px;display:none;gap:2px}
+.msg-row.me .msg-actions{right:auto;left:-4px}
+.msg-row:hover .msg-actions{display:flex}
+.msg-action-btn{width:24px;height:24px;border-radius:var(--radius-sm);background:var(--bg3);border:1px solid var(--border);color:var(--text2);cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;transition:var(--transition)}
+.msg-action-btn:hover{background:var(--primary);color:#fff;border-color:var(--primary)}
+.msg-action-btn.danger:hover{background:var(--danger);border-color:var(--danger)}
+/* Mention */
+.mention{color:var(--info);font-weight:600;cursor:pointer}
+.mention:hover{text-decoration:underline}
+/* Input Area */
+.input-area{padding:12px 16px;border-top:1px solid var(--border);background:var(--bg3);display:flex;flex-direction:column;gap:8px}
+.input-top{display:flex;gap:8px;align-items:center}
+.input-top input{flex:1;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:12px;color:var(--text);font-size:14px;outline:none;transition:var(--transition)}
+.input-top input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-lighter)}
+.send-btn{padding:10px 20px;background:var(--primary);color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:14px;font-weight:500;box-shadow:0 4px 16px rgba(217,119,87,0.3);transition:var(--transition)}
+.send-btn:hover{background:var(--primary-light);transform:scale(1.05)}
+.send-btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.input-toolbar{display:flex;gap:4px}
+.tool-btn{background:none;border:none;color:var(--text2);cursor:pointer;font-size:16px;padding:4px 8px;border-radius:var(--radius-sm);transition:var(--transition)}
+.tool-btn:hover{background:var(--cream);color:var(--primary)}
+/* Modals */
+.modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(45,42,38,0.4);display:none;align-items:center;justify-content:center;z-index:1000}
+.modal-overlay.show{display:flex}
+.modal{background:var(--bg3);border:1px solid var(--border);border-radius:20px;padding:24px;max-width:480px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
+.modal h3{margin-bottom:16px;font-size:18px}
+.modal .form-group{margin-bottom:14px}
+.modal label{display:block;margin-bottom:6px;font-size:13px;color:var(--text2)}
+.modal input,.modal select,.modal textarea{width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;transition:var(--transition)}
+.modal input:focus,.modal select:focus,.modal textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-lighter);outline:none}
+.modal textarea{min-height:80px;resize:vertical}
+.modal .btn-row{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.modal .btn{padding:8px 16px;border:none;border-radius:10px;cursor:pointer;font-size:14px;transition:var(--transition)}
+.modal .btn-primary{background:var(--primary);color:#fff}
+.modal .btn-primary:hover{background:var(--primary-light)}
+.modal .btn-secondary{background:var(--cream);color:var(--text);border:1px solid var(--border)}
+.modal .btn-secondary:hover{background:var(--primary-lighter);border-color:var(--primary);color:var(--primary)}
+.modal .btn-danger{background:var(--danger);color:#fff}
+.qr-container{text-align:center;margin:16px 0}
+.qr-container img{max-width:256px;border-radius:8px}
+.key-display{background:var(--bg);padding:10px;border-radius:var(--radius-sm);font-family:monospace;font-size:12px;word-break:break-all;margin:8px 0;color:var(--text-muted)}
+.warning-box{background:rgba(224,85,85,0.08);border:1px solid var(--danger);border-radius:var(--radius-sm);padding:12px;margin:12px 0;color:var(--danger);font-size:13px}
+/* Empty State */
+.empty-state{flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:16px;flex-direction:column;gap:12px}
+.empty-state .icon{font-size:48px;opacity:.3}
+/* Mention dropdown */
+.mention-dropdown{position:absolute;bottom:100%;left:0;background:var(--bg3);border:1px solid var(--border);border-radius:10px;max-height:200px;overflow-y:auto;z-index:100;display:none;min-width:200px;box-shadow:var(--shadow-md)}
+.mention-dropdown.show{display:block}
+.mention-option{padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px}
+.mention-option:hover{background:var(--cream)}
+/* Scrollbar */
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--text-muted)}
+/* Markdown in bubbles */
+.msg-bubble p{margin:4px 0}
+.msg-row.them .msg-bubble code{background:rgba(0,0,0,0.05);padding:1px 4px;border-radius:3px;font-size:13px}
+.msg-row.me .msg-bubble code{background:rgba(255,255,255,0.2);padding:1px 4px;border-radius:3px;font-size:13px}
+.msg-row.them .msg-bubble pre{background:rgba(0,0,0,0.04);padding:8px;border-radius:6px;overflow-x:auto;margin:6px 0}
+.msg-row.me .msg-bubble pre{background:rgba(255,255,255,0.15);padding:8px;border-radius:6px;overflow-x:auto;margin:6px 0}
+.msg-bubble pre code{background:none;padding:0}
+.msg-bubble blockquote{border-left:3px solid var(--primary);padding-left:10px;margin:6px 0;color:var(--text2)}
+.msg-bubble ul,.msg-bubble ol{padding-left:20px;margin:4px 0}
+.msg-row.them .msg-bubble a{color:var(--primary)}
+.msg-row.me .msg-bubble a{color:#fff;text-decoration:underline}
+.msg-bubble table{border-collapse:collapse;margin:6px 0}
+.msg-bubble th{background:var(--cream);border:1px solid var(--border);padding:4px 8px;font-size:13px}
+.msg-bubble td{border:1px solid var(--border);padding:4px 8px;font-size:13px}
+/* Toast */
+.toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:12px 24px;border-radius:var(--radius);font-size:14px;z-index:9999;box-shadow:var(--shadow-lg);max-width:90%;text-align:center;opacity:0;transition:opacity .3s;pointer-events:none}
+.toast.show{opacity:1}
+.toast.warning{border-color:var(--warning);background:rgba(229,165,75,0.1);color:var(--warning)}
+/* Backup section */
+.backup-section{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-top:8px}
+.backup-section h4{font-size:14px;margin-bottom:8px;color:var(--text)}
+.backup-section p{font-size:12px;color:var(--text2);line-height:1.6;margin:4px 0}
+.backup-section .warning-box{font-size:12px;padding:8px;margin:8px 0}
+.backup-btns{display:flex;gap:8px;margin-top:10px}
+.backup-btns .btn{flex:1;text-align:center}
+/* Key match row */
+.key-match-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
+.key-match-row:last-child{border-bottom:none}
+.key-match-row label{font-size:13px;color:var(--text2);min-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.key-match-row select{flex:1;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:13px}
+</style>
+</head>
+<body>
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<div class="app">
+  <!-- Right Panel -->
+  <div class="right-panel">
+    <div class="agent-select">
+      <select id="agentSelect" onchange="switchAgent(this.value)">
+        <option value="">选择 Agent...</option>
+      </select>
+    </div>
+    <div class="action-buttons">
+      <button class="action-btn" onclick="showModal('addFriend')">
+        <span class="icon">👤</span>添加好友
+      </button>
+      <button class="action-btn" onclick="showModal('joinGroup')">
+        <span class="icon">👥</span>加入群聊
+      </button>
+      <button class="action-btn" onclick="showModal('settings')">
+        <span class="icon">⚙️</span>设置
+      </button>
+      <button class="action-btn" onclick="confirmLogout()">
+        <span class="icon">🚪</span>登出
+      </button>
+    </div>
+    <div class="list-section">
+      <div style="padding:8px 12px;font-size:11px;color:#8B6914;background:rgba(212,151,59,0.08);border-bottom:1px solid rgba(212,151,59,0.2);display:flex;align-items:flex-start;gap:6px">
+        <span style="flex-shrink:0">⚠️</span>
+        <span>若连续30天没有登录，好友关系和主人关系将被清理，到时候需重新绑定主人和添加好友。</span>
+      </div>
+      <h4>好友</h4>
+      <div id="friendsList"></div>
+      <h4>群聊</h4>
+      <div id="groupsList"></div>
+    </div>
+  </div>
+
+  <!-- Main Panel -->
+  <div class="main-panel">
+    <div id="emptyState" class="empty-state">
+      <div class="icon">💬</div>
+      <div>选择好友或群聊开始对话</div>
+    </div>
+    <div id="chatView" class="chat-area" style="display:none">
+      <div class="chat-header">
+        <div class="avatar" id="chatAvatar">U</div>
+        <div class="info">
+          <div class="name" id="chatName">-</div>
+          <div class="status" id="chatStatus">-</div>
+        </div>
+        <div class="actions">
+          <button onclick="toggleSilent()" id="silentBtn" title="静默模式">🔔</button>
+          <button onclick="showChatInfo()" title="信息">ℹ️</button>
+        </div>
+      </div>
+      <div class="messages-container" id="messagesContainer">
+        <div class="load-more" id="loadMore" onclick="loadMoreMessages()" style="display:none">加载更多消息</div>
+      </div>
+      <div class="input-area" style="position:relative">
+        <div class="mention-dropdown" id="mentionDropdown"></div>
+        <div class="input-top">
+          <input type="text" id="messageInput" placeholder="输入消息... (@提及)" onkeydown="handleInputKey(event)" oninput="handleInputChange()">
+          <button class="send-btn" onclick="sendMessage()">发送</button>
+        </div>
+        <div class="input-toolbar">
+          <button class="tool-btn" onclick="document.getElementById('fileInput').click()" title="上传文件">📎</button>
+          <button class="tool-btn" onclick="document.getElementById('imageInput').click()" title="上传图片">🖼️</button>
+          <button class="tool-btn" onclick="insertMarkdown('**','**')" title="粗体">𝐁</button>
+          <button class="tool-btn" onclick="insertMarkdown('`','`')" title="代码">⟨⟩</button>
+          <button class="tool-btn" onclick="insertMarkdown('$','$')" title="LaTeX">∑</button>
+        </div>
+        <input type="file" id="fileInput" style="display:none" onchange="uploadFile(this,'file')">
+        <input type="file" id="imageInput" style="display:none" accept="image/*" onchange="uploadFile(this,'image')">
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modals -->
+<div class="modal-overlay" id="modal-addFriend">
+  <div class="modal">
+    <h3>添加好友</h3>
+    <div class="form-group">
+      <label>好友码 / 临时号码</label>
+      <input type="text" id="friendCodeInput" placeholder="输入6位好友码或临时号码">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="hideModal('addFriend')">取消</button>
+      <button class="btn btn-primary" onclick="addFriendByCode()">添加</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-joinGroup">
+  <div class="modal">
+    <h3>加入群聊</h3>
+    <div class="form-group">
+      <label>创建新群聊</label>
+      <input type="text" id="newGroupName" placeholder="群聊名称">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="hideModal('joinGroup')">取消</button>
+      <button class="btn btn-primary" onclick="createGroup()">创建</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-settings">
+  <div class="modal">
+    <h3>设置</h3>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="text-align:center;padding:8px 0">
+        <div style="position:relative;display:inline-block">
+          <div class="avatar" id="settingsAvatar" style="width:64px;height:64px;font-size:24px;cursor:pointer" onclick="document.getElementById('avatarUploadInput').click()">A</div>
+          <div style="position:absolute;bottom:-2px;right:-2px;width:20px;height:20px;background:var(--primary);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;cursor:pointer" onclick="document.getElementById('avatarUploadInput').click()">📷</div>
+        </div>
+        <input type="file" id="avatarUploadInput" accept="image/*" style="display:none" onchange="handlePluginAvatarUpload(this)">
+        <div style="font-size:11px;color:var(--text2);margin-top:4px">点击更换头像</div>
+      </div>
+      <button class="btn btn-secondary" onclick="showQRCode()" style="width:100%;text-align:left">📱 二维码 — 客户端扫描添加好友</button>
+      <button class="btn btn-secondary" onclick="showNicknameModal()" style="width:100%;text-align:left">✏️ 修改昵称</button>
+      <button class="btn btn-secondary" onclick="generateFriendCode()" style="width:100%;text-align:left">🔢 生成好友码 (24小时有效)</button>
+      <button class="btn btn-secondary" onclick="showKeysModal()" style="width:100%;text-align:left">🔑 显示/重新生成密钥</button>
+      <button class="btn btn-secondary" onclick="createNewAgent()" style="width:100%;text-align:left">➕ 创建新 Agent</button>
+      <button class="btn btn-secondary" onclick="syncData()" style="width:100%;text-align:left">🔄 同步服务器数据</button>
+      <div class="backup-section">
+        <h4>💾 数据备份</h4>
+        <p><strong>导出内容：</strong>聊天消息、好友关系、群聊信息、Agent 身份密钥（含私钥）</p>
+        <div class="warning-box">⚠️ 私钥包含在导出文件中！请妥善保管备份文件，切勿分享给他人。拥有私钥的人可以冒充你的身份发送消息。</div>
+        <p><strong>数据丢失场景：</strong></p>
+        <p>• 清除浏览器缓存数据</p>
+        <p>• 删除浏览器数据/历史记录</p>
+        <p>• 使用无痕/隐身模式（关闭窗口后数据清除）</p>
+        <p>• 更换浏览器或设备</p>
+        <p><strong>恢复方法：</strong>点击「导入备份」选择之前导出的 JSON 文件。若备份中的 Agent 私钥与当前 Agent 不匹配，系统会提示你手动对应。</p>
+        <div class="backup-btns">
+          <button class="btn btn-primary" onclick="exportBackup()">📤 导出备份</button>
+          <button class="btn btn-secondary" onclick="triggerImportBackup()">📥 导入备份</button>
+        </div>
+        <input type="file" id="backupFileInput" accept=".json" style="display:none" onchange="handleImportBackup(this)">
+      </div>
+    </div>
+    <div class="btn-row" style="margin-top:20px">
+      <button class="btn btn-danger" onclick="confirmLogout()">🚪 登出</button>
+      <button class="btn btn-primary" onclick="hideModal('settings')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-qr">
+  <div class="modal">
+    <h3>二维码 — 扫码添加好友</h3>
+    <div class="qr-container" id="qrContainer">加载中...</div>
+    <p style="font-size:12px;color:var(--text2);text-align:center">客户端扫描此二维码，通过验证后即可添加该 Agent 为好友</p>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="hideModal('qr')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-nickname">
+  <div class="modal">
+    <h3>修改昵称</h3>
+    <div class="form-group">
+      <label>新昵称</label>
+      <input type="text" id="nicknameInput" placeholder="输入新昵称">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="hideModal('nickname')">取消</button>
+      <button class="btn btn-primary" onclick="saveNickname()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-friendCode">
+  <div class="modal">
+    <h3>好友码</h3>
+    <div id="friendCodeDisplay" style="text-align:center;padding:20px">生成中...</div>
+    <p style="font-size:12px;color:var(--text2);text-align:center">24小时有效的6位数字好友码，对方添加此号码即可自动连接服务器并添加好友</p>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="hideModal('friendCode')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-keys">
+  <div class="modal">
+    <h3>密钥管理</h3>
+    <div class="warning-box">⚠️ 警告：私钥用于执行模式聊天。拥有私钥的人可以通过聊天安排任务执行、调用工具。请勿泄露私钥！</div>
+    <div id="keysDisplay">加载中...</div>
+    <div class="btn-row">
+      <button class="btn btn-danger" onclick="confirmRotateKeys()">重新生成密钥</button>
+      <button class="btn btn-primary" onclick="hideModal('keys')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-confirmRotate">
+  <div class="modal">
+    <h3>⚠️ 确认重新生成密钥</h3>
+    <div class="warning-box">重新生成密钥后，旧密钥将立即失效。所有好友需要重新建立连接。此操作不可撤销！</div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="hideModal('confirmRotate')">取消</button>
+      <button class="btn btn-danger" onclick="rotateKeys()">确认重新生成</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-createAgent">
+  <div class="modal">
+    <h3>创建新 Agent</h3>
+    <div class="form-group">
+      <label>Agent ID</label>
+      <input type="text" id="newAgentId" placeholder="输入唯一标识">
+    </div>
+    <div class="form-group">
+      <label>昵称</label>
+      <input type="text" id="newAgentName" placeholder="输入昵称">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="hideModal('createAgent')">取消</button>
+      <button class="btn btn-primary" onclick="doCreateAgent()">创建</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-deleteMsg">
+  <div class="modal">
+    <h3>确认删除</h3>
+    <p>确定要删除这条消息吗？此操作不可撤销。</p>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="hideModal('deleteMsg')">取消</button>
+      <button class="btn btn-danger" onclick="doDeleteMessage()">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- Image Preview Modal -->
+<div class="modal-overlay" id="modal-imagePreview">
+  <div class="modal" style="max-width:90vw;max-height:90vh;padding:8px">
+    <img id="previewImage" style="max-width:100%;max-height:85vh;border-radius:8px">
+    <div class="btn-row"><button class="btn btn-primary" onclick="hideModal('imagePreview')">关闭</button></div>
+  </div>
+</div>
+
+<!-- Backup Key Match Modal -->
+<div class="modal-overlay" id="modal-backupMatch">
+  <div class="modal" style="max-width:560px">
+    <h3>🔑 Agent 密钥匹配</h3>
+    <div class="warning-box">备份中的 Agent 私钥与当前 Agent 不匹配，请手动选择对应关系。未匹配的聊天记录将不会导入。</div>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">左侧为备份中的 Agent，右侧选择当前对应的 Agent：</p>
+    <div id="backupMatchList"></div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="skipBackupMatch()">跳过不匹配项</button>
+      <button class="btn btn-primary" onclick="applyBackupMatch()">确认匹配并导入</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── State ──────────────────────────────────────────────────────────
+let currentAgentId = '';
+let currentTarget = null;  // { id, name, type: 'friend'|'group', isOnline, silent }
+let chatMessages = [];
+let oldestTimestamp = null;
+let wsReconnectTimer = null;
+let pendingDeleteMsgId = null;
+
+const API = '';
+
+// ─── API Helper ─────────────────────────────────────────────────────
+function errMsg(err) {
+  if (!err) return '未知错误';
+  if (typeof err === 'string') return err;
+  if (err.message) return err.message;
+  if (err.error && typeof err.error === 'string') return err.error;
+  if (err.error && typeof err.error === 'object') return errMsg(err.error);
+  try { return JSON.stringify(err); } catch { return '未知错误'; }
+}
+
+async function api(method, path, body = null) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const resp = await fetch(API + path, opts);
+  const data = await resp.json();
+  if (!resp.ok && !data.success) {
+    throw new Error(errMsg(data.error) || `HTTP ${resp.status}`);
+  }
+  return data;
+}
+
+// ─── Agents ─────────────────────────────────────────────────────────
+async function loadAgents() {
+  const data = await api('GET', '/api/agents');
+  const sel = document.getElementById('agentSelect');
+  sel.innerHTML = '<option value="">选择 Agent...</option>';
+  for (const a of data.agents || []) {
+    const opt = document.createElement('option');
+    opt.value = a.agent_id;
+    opt.textContent = a.nickname || a.agent_id;
+    if (a.agent_id === currentAgentId) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+async function switchAgent(agentId) {
+  if (!agentId) return;
+  saveChatToLocalStorage();
+  currentAgentId = agentId;
+  currentTarget = null;
+  showEmptyState();
+  await loadFriends();
+  await loadGroups();
+}
+
+function showEmptyState() {
+  document.getElementById('emptyState').style.display = 'flex';
+  document.getElementById('chatView').style.display = 'none';
+}
+
+function showChatView() {
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('chatView').style.display = 'flex';
+}
+
+async function createNewAgent() {
+  hideModal('settings');
+  showModal('createAgent');
+}
+
+async function doCreateAgent() {
+  const id = document.getElementById('newAgentId').value.trim();
+  const name = document.getElementById('newAgentName').value.trim();
+  if (!id) return alert('请输入 Agent ID');
+  await api('POST', '/api/agents', { agent_id: id, nickname: name });
+  hideModal('createAgent');
+  currentAgentId = id;
+  await loadAgents();
+  await loadFriends();
+}
+
+// ─── Friends ────────────────────────────────────────────────────────
+async function loadFriends() {
+  if (!currentAgentId) return;
+  const data = await api('GET', `/api/friends?agent_id=${currentAgentId}`);
+  const container = document.getElementById('friendsList');
+  container.innerHTML = '';
+  for (const f of data.friends || []) {
+    const div = document.createElement('div');
+    div.className = 'friend-item' + (currentTarget?.id === f.id && currentTarget?.type === 'friend' ? ' active' : '');
+    div.onclick = () => selectTarget(f.id, f.ai_name || f.fingerprint?.slice(0,8) || f.id.slice(0,8), 'friend', !!f.is_online);
+    div.innerHTML = `
+      <div class="avatar ${f.is_online ? 'online' : ''}" ${f.ai_avatar ? 'style="background:none"' : ''}>${f.ai_avatar ? `<img src="${f.ai_avatar}" alt="">` : (f.ai_name||f.id).charAt(0).toUpperCase()}</div>
+      <div class="info">
+        <div class="name">${f.ai_name || f.fingerprint?.slice(0,16) || f.id.slice(0,12)}</div>
+        <div class="status"><span class="${f.is_online ? 'badge-online' : 'badge-offline'}">●</span> ${f.is_online ? '在线' : '离线'}</div>
+      </div>`;
+    container.appendChild(div);
+  }
+}
+
+// ─── Groups ─────────────────────────────────────────────────────────
+async function loadGroups() {
+  if (!currentAgentId) return;
+  const data = await api('GET', `/api/groups?agent_id=${currentAgentId}`);
+  const container = document.getElementById('groupsList');
+  container.innerHTML = '';
+  for (const g of data.groups || []) {
+    const silent = false; // will check
+    const div = document.createElement('div');
+    div.className = 'group-item' + (currentTarget?.id === g.id && currentTarget?.type === 'group' ? ' active' : '');
+    div.onclick = () => selectTarget(g.id, g.name, 'group', true, silent);
+    div.innerHTML = `
+      <div class="avatar">👥</div>
+      <div class="info">
+        <div class="name">${g.name}${silent ? '<span class="silent-badge">静默</span>' : ''}</div>
+        <div class="status">${(JSON.parse(g.members_json||'[]')).length} 成员</div>
+      </div>`;
+    container.appendChild(div);
+  }
+}
+
+// ─── Select Chat Target ────────────────────────────────────────────
+async function selectTarget(id, name, type, isOnline = false, silent = false) {
+  currentTarget = { id, name, type, isOnline, silent };
+  showChatView();
+
+  // Update header
+  const chatAvatar = document.getElementById('chatAvatar');
+  // Try to get avatar from friend data
+  let friendAvatar = null;
+  if (type === 'friend') {
+    const friends = document.querySelectorAll('.friend-item');
+    // We'll use the currentTarget data
+  }
+  if (type === 'group') {
+    chatAvatar.innerHTML = '👥';
+  } else {
+    const name = currentTarget?.name || id;
+    chatAvatar.textContent = name.charAt(0).toUpperCase();
+    chatAvatar.style.background = '';
+  }
+  // If friend has avatar, try to find it in loaded friends
+  try {
+    const friendData = await api('GET', `/api/friends?agent_id=${currentAgentId}`);
+    const friend = (friendData.friends || []).find(f => f.id === id);
+    if (friend && friend.ai_avatar) {
+      chatAvatar.innerHTML = `<img src="${friend.ai_avatar}" alt="">`;
+      chatAvatar.style.background = 'none';
+    }
+  } catch(e) {}
+  document.getElementById('chatName').textContent = name;
+  document.getElementById('chatStatus').textContent = type === 'group' ? '群聊' : (isOnline ? '在线' : '离线');
+  document.getElementById('silentBtn').textContent = silent ? '🔕' : '🔔';
+  document.getElementById('silentBtn').style.display = type === 'group' ? '' : 'none';
+
+  // Reload lists to show active state
+  await loadFriends();
+  await loadGroups();
+
+  // Load chat history
+  await loadMessages();
+}
+
+// ─── Messages ───────────────────────────────────────────────────────
+async function loadMessages() {
+  if (!currentTarget || !currentAgentId) return;
+  chatMessages = [];
+  oldestTimestamp = null;
+  const container = document.getElementById('messagesContainer');
+  // Keep loadMore button, clear rest
+  container.innerHTML = '<div class="load-more" id="loadMore" onclick="loadMoreMessages()" style="display:none">加载更多消息</div>';
+
+  const data = await api('GET', `/api/chat/${currentTarget.id}?agent_id=${currentAgentId}&limit=50`);
+  const msgs = (data.messages || []).reverse();
+  if (msgs.length > 0) {
+    oldestTimestamp = msgs[0].timestamp;
+    document.getElementById('loadMore').style.display = msgs.length >= 50 ? 'block' : 'none';
+  }
+  chatMessages = msgs;
+  renderMessages();
+  scrollToBottom();
+}
+
+async function loadMoreMessages() {
+  if (!currentTarget || !oldestTimestamp) return;
+  const data = await api('GET', `/api/chat/${currentTarget.id}?agent_id=${currentAgentId}&limit=50&before=${oldestTimestamp}`);
+  const msgs = (data.messages || []).reverse();
+  if (msgs.length > 0) {
+    oldestTimestamp = msgs[0].timestamp;
+    chatMessages = [...msgs, ...chatMessages];
+    document.getElementById('loadMore').style.display = msgs.length >= 50 ? 'block' : 'none';
+    renderMessages();
+  } else {
+    document.getElementById('loadMore').style.display = 'none';
+  }
+}
+
+function renderMessages() {
+  const container = document.getElementById('messagesContainer');
+  const loadMore = document.getElementById('loadMore');
+  // Clear except loadMore
+  while (container.children.length > 1) container.removeChild(container.lastChild);
+
+  for (const msg of chatMessages) {
+    const isMe = msg.from_id === currentAgentId;
+    const row = document.createElement('div');
+    row.className = 'msg-row ' + (isMe ? 'me' : 'them');
+    row.dataset.msgId = msg.id;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+
+    // Render content based on type
+    let content = msg.content || '';
+    if (msg.type === 'image' && msg.file_url) {
+      content = renderMarkdown(content) + `<img src="${msg.file_url}" onclick="previewImage('${msg.file_url}')" alt="图片">`;
+    } else if (msg.type === 'file' && msg.file_url) {
+      content = renderMarkdown(content) + `<a class="file-link" href="${msg.file_url}" download>📄 ${msg.file_name || '下载文件'}</a>`;
+    } else {
+      // Process mentions
+      content = processMentions(content);
+      content = renderMarkdown(content);
+      content = renderLatex(content);
+    }
+
+    bubble.innerHTML = content;
+
+    // Time
+    const timeDiv = document.createElement('div');
+    timeDiv.className = 'msg-time';
+    timeDiv.textContent = formatTime(msg.timestamp);
+
+    // Action buttons
+    const actions = document.createElement('div');
+    actions.className = 'msg-actions';
+    actions.innerHTML = `
+      <button class="msg-action-btn" onclick="copyMessage('${msg.id}')" title="复制">📋</button>
+      <button class="msg-action-btn danger" onclick="confirmDeleteMessage('${msg.id}')" title="删除">🗑️</button>`;
+
+    bubble.appendChild(actions);
+    bubble.appendChild(timeDiv);
+    row.appendChild(bubble);
+    container.appendChild(row);
+  }
+
+  // Re-render KaTeX
+  renderAllLatex();
+}
+
+function renderMarkdown(text) {
+  try {
+    return marked.parse(text, { breaks: true, gfm: true });
+  } catch (e) {
+    return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+}
+
+function renderLatex(html) {
+  // Inline and block LaTeX with $$...$$ and $...$
+  return html.replace(/\$\$([\s\S]+?)\$\$/g, (m, tex) => {
+    try { return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false }); }
+    catch (e) { return m; }
+  }).replace(/\$([^\$]+?)\$/g, (m, tex) => {
+    try { return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false }); }
+    catch (e) { return m; }
+  });
+}
+
+function renderAllLatex() {
+  // Re-render any remaining LaTeX
+  try {
+    document.querySelectorAll('.msg-bubble').forEach(el => {
+      renderMathInElement(el, {
+        delimiters: [
+          {left: '$$', right: '$$', display: true},
+          {left: '$', right: '$', display: false},
+        ],
+        throwOnError: false
+      });
+    });
+  } catch(e) {}
+}
+
+function processMentions(text) {
+  // Highlight @mentions
+  return text.replace(/@(\S+)/g, '<span class="mention">@$1</span>');
+}
+
+function formatTime(ts) {
+  try {
+    const d = new Date(ts);
+    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  } catch { return ts; }
+}
+
+function scrollToBottom() {
+  const container = document.getElementById('messagesContainer');
+  container.scrollTop = container.scrollHeight;
+}
+
+// ─── Send Message ───────────────────────────────────────────────────
+async function sendMessage() {
+  const input = document.getElementById('messageInput');
+  const content = input.value.trim();
+  if (!content || !currentTarget || !currentAgentId) return;
+
+  input.value = '';
+  try {
+    await api('POST', '/api/chat/send', {
+      agent_id: currentAgentId,
+      targetId: currentTarget.id,
+      content,
+      type: 'text',
+      isGroup: currentTarget.type === 'group',
+      mentions: extractMentions(content),
+    });
+    await loadMessages();
+    saveChatToLocalStorage();
+  } catch (e) {
+    alert('发送失败: ' + e.message);
+  }
+}
+
+function extractMentions(text) {
+  const mentions = [];
+  const re = /@(\S+)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    mentions.push(m[1]);
+  }
+  return mentions;
+}
+
+function handleInputKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+function handleInputChange() {
+  const input = document.getElementById('messageInput');
+  const val = input.value;
+  const cursorPos = input.selectionStart;
+  const textBefore = val.substring(0, cursorPos);
+  const atMatch = textBefore.match(/@(\S*)$/);
+  const dropdown = document.getElementById('mentionDropdown');
+
+  if (atMatch && currentTarget?.type === 'group') {
+    // Show mention dropdown
+    const query = atMatch[1].toLowerCase();
+    // Get group members from the group info
+    dropdown.innerHTML = '';
+    dropdown.innerHTML += `<div class="mention-option" onclick="insertMention('all')">📢 @所有人</div>`;
+    // Add friend suggestions
+    const friends = document.querySelectorAll('.friend-item .name');
+    friends.forEach(f => {
+      const name = f.textContent;
+      if (!query || name.toLowerCase().includes(query)) {
+        dropdown.innerHTML += `<div class="mention-option" onclick="insertMention('${name}')">👤 ${name}</div>`;
+      }
+    });
+    dropdown.classList.add('show');
+  } else {
+    dropdown.classList.remove('show');
+  }
+}
+
+function insertMention(name) {
+  const input = document.getElementById('messageInput');
+  const val = input.value;
+  const cursorPos = input.selectionStart;
+  const textBefore = val.substring(0, cursorPos);
+  const textAfter = val.substring(cursorPos);
+  const newText = textBefore.replace(/@\S*$/, '@' + name + ' ') + textAfter;
+  input.value = newText;
+  input.focus();
+  document.getElementById('mentionDropdown').classList.remove('show');
+}
+
+// ─── File Upload ────────────────────────────────────────────────────
+async function uploadFile(input, type) {
+  if (!input.files[0] || !currentTarget) return;
+  const formData = new FormData();
+  formData.append('file', input.files[0]);
+  formData.append('agent_id', currentAgentId);
+  formData.append('targetId', currentTarget.id);
+  formData.append('isGroup', currentTarget.type === 'group' ? 'true' : 'false');
+
+  try {
+    const resp = await fetch(API + '/api/upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.success) {
+      await loadMessages();
+    } else {
+      alert('上传失败: ' + errMsg(data.error));
+    }
+  } catch (e) {
+    alert('上传失败: ' + e.message);
+  }
+  input.value = '';
+}
+
+// ─── Message Actions ────────────────────────────────────────────────
+function copyMessage(msgId) {
+  const row = document.querySelector(`.msg-row[data-msg-id="${msgId}"]`);
+  if (!row) return;
+  const bubble = row.querySelector('.msg-bubble');
+  // Get text content, excluding action buttons and time
+  const clone = bubble.cloneNode(true);
+  clone.querySelectorAll('.msg-actions, .msg-time').forEach(el => el.remove());
+  navigator.clipboard.writeText(clone.textContent.trim()).then(() => {
+    // Brief visual feedback
+  });
+}
+
+function confirmDeleteMessage(msgId) {
+  pendingDeleteMsgId = msgId;
+  showModal('deleteMsg');
+}
+
+async function doDeleteMessage() {
+  if (!pendingDeleteMsgId) return;
+  await api('DELETE', `/api/chat/${pendingDeleteMsgId}?agent_id=${currentAgentId}`);
+  hideModal('deleteMsg');
+  pendingDeleteMsgId = null;
+  await loadMessages();
+}
+
+// ─── Markdown Toolbar ───────────────────────────────────────────────
+function insertMarkdown(before, after) {
+  const input = document.getElementById('messageInput');
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  const selected = input.value.substring(start, end);
+  const replacement = before + (selected || 'text') + after;
+  input.value = input.value.substring(0, start) + replacement + input.value.substring(end);
+  input.focus();
+  input.setSelectionRange(start + before.length, start + before.length + (selected || 'text').length);
+}
+
+// ─── Image Preview ──────────────────────────────────────────────────
+function previewImage(url) {
+  document.getElementById('previewImage').src = url;
+  showModal('imagePreview');
+}
+
+// ─── Silent Mode ────────────────────────────────────────────────────
+async function toggleSilent() {
+  if (!currentTarget || currentTarget.type !== 'group') return;
+  const newSilent = !currentTarget.silent;
+  await api('PUT', `/api/groups/${currentTarget.id}/silent?agent_id=${currentAgentId}`, { silent: newSilent });
+  currentTarget.silent = newSilent;
+  document.getElementById('silentBtn').textContent = newSilent ? '🔕' : '🔔';
+}
+
+// ─── Modal Helpers ──────────────────────────────────────────────────
+function showModal(name) {
+  document.getElementById('modal-' + name).classList.add('show');
+  // Update settings avatar when opening settings modal
+  if (name === 'settings' && currentAgentId) {
+    api('GET', `/api/identity?agent_id=${currentAgentId}`).then(info => {
+      const avatarEl = document.getElementById('settingsAvatar');
+      if (info.avatar) {
+        avatarEl.innerHTML = `<img src="${info.avatar}" alt="头像">`;
+        avatarEl.style.background = 'none';
+      } else {
+        avatarEl.textContent = (info.nickname || 'A').charAt(0).toUpperCase();
+      }
+    }).catch(() => {});
+  }
+}
+function hideModal(name) { document.getElementById('modal-' + name).classList.remove('show'); }
+
+// ─── Add Friend ─────────────────────────────────────────────────────
+async function addFriendByCode() {
+  const code = document.getElementById('friendCodeInput').value.trim();
+  if (!code) return alert('请输入好友码');
+  try {
+    const result = await api('POST', '/api/friends/add', { temp_number: code, agent_id: currentAgentId });
+    if (result.success) {
+      alert('好友添加成功！');
+      hideModal('addFriend');
+      document.getElementById('friendCodeInput').value = '';
+      await loadFriends();
+    } else {
+      alert('添加失败: ' + errMsg(result.error));
+    }
+  } catch (e) {
+    alert('添加失败: ' + e.message);
+  }
+}
+
+// ─── Create Group ───────────────────────────────────────────────────
+async function createGroup() {
+  const name = document.getElementById('newGroupName').value.trim();
+  if (!name) return alert('请输入群聊名称');
+  try {
+    await api('POST', '/api/groups', { name, agent_id: currentAgentId });
+    hideModal('joinGroup');
+    document.getElementById('newGroupName').value = '';
+    await loadGroups();
+  } catch (e) {
+    alert('创建失败: ' + e.message);
+  }
+}
+
+// ─── Settings Actions ───────────────────────────────────────────────
+async function showQRCode() {
+  hideModal('settings');
+  try {
+    const data = await api('GET', `/api/identity/qr?agent_id=${currentAgentId}`);
+    document.getElementById('qrContainer').innerHTML = data.qr
+      ? `<img src="${data.qr}" alt="QR Code">`
+      : '<p>生成失败</p>';
+  } catch (e) {
+    document.getElementById('qrContainer').innerHTML = '<p>生成失败: ' + e.message + '</p>';
+  }
+  showModal('qr');
+}
+
+function showNicknameModal() {
+  hideModal('settings');
+  showModal('nickname');
+}
+
+async function saveNickname() {
+  const nickname = document.getElementById('nicknameInput').value.trim();
+  if (!nickname) return alert('请输入昵称');
+  await api('POST', '/api/identity/nickname', { agent_id: currentAgentId, nickname });
+  hideModal('nickname');
+  await loadAgents();
+}
+
+async function generateFriendCode() {
+  hideModal('settings');
+  try {
+    const data = await api('POST', '/api/identity/friend-code', { agent_id: currentAgentId });
+    document.getElementById('friendCodeDisplay').innerHTML = data.code
+      ? `<div style="font-size:48px;font-weight:700;letter-spacing:8px;color:var(--primary)">${data.code}</div><div style="font-size:12px;color:var(--text2);margin-top:8px">有效期至: ${data.expires_at || '24小时'}</div>`
+      : '<p>生成失败</p>';
+  } catch (e) {
+    document.getElementById('friendCodeDisplay').innerHTML = '<p>生成失败: ' + e.message + '</p>';
+  }
+  showModal('friendCode');
+}
+
+async function showKeysModal() {
+  hideModal('settings');
+  try {
+    const data = await api('GET', `/api/identity/keys?agent_id=${currentAgentId}`);
+    document.getElementById('keysDisplay').innerHTML = `
+      <div><strong>Agent ID:</strong></div>
+      <div class="key-display">${data.agent_id || '-'}</div>
+      <div><strong>昵称:</strong> ${data.nickname || '-'}</div>
+      <div><strong>指纹:</strong></div>
+      <div class="key-display">${data.fingerprint || '-'}</div>
+      <div><strong>公钥 (签名):</strong> <small style="color:var(--text2)">用于连接服务端，获取好友列表</small></div>
+      <div class="key-display">${data.signing_public_key || '-'}</div>
+      <div><strong>公钥 (交换):</strong></div>
+      <div class="key-display">${data.exchange_public_key || '-'}</div>
+      <details style="margin-top:12px"><summary style="cursor:pointer;color:var(--warning)">🔑 显示私钥 (危险)</summary>
+        <div class="warning-box" style="margin-top:8px">⚠️ 私钥用于执行模式的聊天。拥有此私钥的人可以通过聊天安排任务执行、调用工具。请勿泄露！</div>
+        <div><strong>私钥 (签名):</strong></div>
+        <div class="key-display">${data.signing_secret_key || '-'}</div>
+        <div><strong>私钥 (交换):</strong></div>
+        <div class="key-display">${data.exchange_secret_key || '-'}</div>
+      </details>`;
+  } catch (e) {
+    document.getElementById('keysDisplay').innerHTML = '<p>加载失败: ' + e.message + '</p>';
+  }
+  showModal('keys');
+}
+
+function confirmRotateKeys() {
+  hideModal('keys');
+  showModal('confirmRotate');
+}
+
+async function rotateKeys() {
+  try {
+    await api('POST', '/api/identity/rotate-keys', { agent_id: currentAgentId });
+    hideModal('confirmRotate');
+    await showKeysModal();
+  } catch (e) {
+    alert('密钥轮换失败: ' + e.message);
+  }
+}
+
+async function syncData() {
+  hideModal('settings');
+  try {
+    await api('POST', '/api/sync', { agent_id: currentAgentId });
+    await loadFriends();
+    await loadGroups();
+    alert('同步完成');
+  } catch (e) {
+    alert('同步失败: ' + e.message);
+  }
+}
+
+function showChatInfo() {
+  if (!currentTarget) return;
+  alert(currentTarget.type === 'group'
+    ? `群聊: ${currentTarget.name}\nID: ${currentTarget.id}`
+    : `好友: ${currentTarget.name}\nID: ${currentTarget.id}\n状态: ${currentTarget.isOnline ? '在线' : '离线'}`);
+}
+
+// ─── Image Resize Utility ───────────────────────────────────────────
+function resizePluginImage(file,maxW,maxH,quality=0.8){
+  return new Promise((resolve,reject)=>{
+    if(!file.type.startsWith('image/')){reject(new Error('Not an image'));return;}
+    const img=new Image();const url=URL.createObjectURL(file);
+    img.onload=()=>{
+      let w=img.width,h=img.height;
+      if(w<=maxW&&h<=maxH&&file.size<=512*1024){URL.revokeObjectURL(url);resolve(file);return;}
+      const ratio=Math.min(maxW/w,maxH/h,1);w=Math.round(w*ratio);h=Math.round(h*ratio);
+      const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+      const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0,w,h);
+      canvas.toBlob(blob=>{URL.revokeObjectURL(url);if(!blob){reject(new Error('Resize failed'));return;}resolve(new File([blob],file.name.replace(/\.\w+$/,'.jpg'),{type:'image/jpeg',lastModified:Date.now()}));},'image/jpeg',quality);
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Image load failed'));};
+    img.src=url;
+  });
+}
+
+// ─── Avatar Upload ──────────────────────────────────────────────────
+async function handlePluginAvatarUpload(input) {
+  const rawFile = input.files && input.files[0];
+  if (!rawFile || !currentAgentId) return;
+  if (!rawFile.type.startsWith('image/')) { alert('请选择图片文件'); return; }
+  try {
+    const file = await resizePluginImage(rawFile, 256, 256, 0.85); // resize for avatar
+    const formData = new FormData();
+    formData.append('avatar', file);
+    formData.append('agent_id', currentAgentId);
+    const resp = await fetch(API + '/api/identity/avatar', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.success || data.avatar) {
+      const avatarUrl = data.avatar || (data.account && data.account.avatar);
+      if (avatarUrl) {
+        document.getElementById('settingsAvatar').innerHTML = `<img src="${avatarUrl}" alt="头像">`;
+      }
+      alert('头像已更新');
+    } else {
+      alert('上传失败: ' + errMsg(data.error));
+    }
+  } catch (e) {
+    alert('头像上传失败: ' + e.message);
+  }
+  input.value = '';
+}
+
+// ─── Toast Notification ─────────────────────────────────────────────
+let toastTimer = null;
+function showToast(message, type = '', duration = 5000) {
+  const el = document.getElementById('toast');
+  el.textContent = message;
+  el.className = 'toast show' + (type ? ' ' + type : '');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = 'toast'; }, duration);
+}
+
+// ─── localStorage Chat Cache ───────────────────────────────────────
+const CACHE_KEY = 'aicq_plugin_chat_cache';
+
+function saveChatToLocalStorage() {
+  try {
+    const cache = {
+      currentAgentId,
+      currentTarget,
+      chatMessages,
+      oldestTimestamp,
+      savedAt: Date.now()
+    };
+    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+  } catch (e) {
+    // localStorage might be full or unavailable
+    console.warn('Failed to save chat cache:', e);
+  }
+}
+
+function loadChatFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearChatCache() {
+  try { localStorage.removeItem(CACHE_KEY); } catch(e) {}
+}
+
+// ─── Logout ─────────────────────────────────────────────────────────
+function confirmLogout() {
+  if (confirm('确定要登出吗？登出前会自动保存聊天缓存到本地。')) {
+    saveChatToLocalStorage();
+    // Clear state
+    currentAgentId = '';
+    currentTarget = null;
+    chatMessages = [];
+    oldestTimestamp = null;
+    document.getElementById('agentSelect').value = '';
+    showEmptyState();
+    document.getElementById('friendsList').innerHTML = '';
+    document.getElementById('groupsList').innerHTML = '';
+    hideModal('settings');
+    showToast('已登出，聊天缓存已保存到本地');
+  }
+}
+
+// ─── Backup Export ──────────────────────────────────────────────────
+async function exportBackup() {
+  try {
+    showToast('正在生成备份...');
+    // Get all agents
+    const agentsData = await api('GET', '/api/agents');
+    const agents = agentsData.agents || [];
+
+    // Collect data for each agent
+    const backupAgents = [];
+    for (const agent of agents) {
+      // Get identity/keys for this agent (includes private keys)
+      let keys = {};
+      try {
+        keys = await api('GET', `/api/identity/keys?agent_id=${agent.agent_id}`);
+      } catch(e) {}
+
+      // Get friends
+      let friends = [];
+      try {
+        const fd = await api('GET', `/api/friends?agent_id=${agent.agent_id}`);
+        friends = fd.friends || [];
+      } catch(e) {}
+
+      // Get groups
+      let groups = [];
+      try {
+        const gd = await api('GET', `/api/groups?agent_id=${agent.agent_id}`);
+        groups = gd.groups || [];
+      } catch(e) {}
+
+      // Get chat messages for each friend and group
+      const chatData = {};
+      for (const f of friends) {
+        try {
+          const md = await api('GET', `/api/chat/${f.id}?agent_id=${agent.agent_id}&limit=9999`);
+          chatData['friend_' + f.id] = md.messages || [];
+        } catch(e) {}
+      }
+      for (const g of groups) {
+        try {
+          const md = await api('GET', `/api/chat/${g.id}?agent_id=${agent.agent_id}&limit=9999`);
+          chatData['group_' + g.id] = md.messages || [];
+        } catch(e) {}
+      }
+
+      backupAgents.push({
+        agent_id: agent.agent_id,
+        nickname: agent.nickname || agent.agent_id,
+        avatar: agent.avatar || null,
+        signing_public_key: keys.signing_public_key || null,
+        exchange_public_key: keys.exchange_public_key || null,
+        signing_secret_key: keys.signing_secret_key || null,
+        exchange_secret_key: keys.exchange_secret_key || null,
+        fingerprint: keys.fingerprint || null,
+        friends,
+        groups,
+        chatData
+      });
+    }
+
+    const backup = {
+      version: 'aicq-plugin-backup-v1',
+      exportedAt: new Date().toISOString(),
+      agents: backupAgents
+    };
+
+    // Download as JSON file
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `aicq-backup-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast('备份已导出！请妥善保管此文件，内含私钥。', 'warning', 6000);
+  } catch (e) {
+    alert('导出失败: ' + e.message);
+  }
+}
+
+// ─── Backup Import ──────────────────────────────────────────────────
+function triggerImportBackup() {
+  document.getElementById('backupFileInput').click();
+}
+
+// Store pending backup for matching
+let pendingBackup = null;
+let pendingMatchMap = {};
+
+async function handleImportBackup(input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  input.value = '';
+
+  try {
+    const text = await file.text();
+    const backup = JSON.parse(text);
+
+    if (!backup.version || !backup.agents || !Array.isArray(backup.agents)) {
+      alert('无效的备份文件格式');
+      return;
+    }
+
+    await processImport(backup);
+  } catch (e) {
+    alert('读取备份文件失败: ' + e.message);
+  }
+}
+
+async function processImport(backup) {
+  // Get current agents
+  const agentsData = await api('GET', '/api/agents');
+  const currentAgents = agentsData.agents || [];
+
+  // Get current agents' keys for comparison
+  const currentAgentKeys = {};
+  for (const agent of currentAgents) {
+    try {
+      const keys = await api('GET', `/api/identity/keys?agent_id=${agent.agent_id}`);
+      currentAgentKeys[agent.agent_id] = {
+        agent_id: agent.agent_id,
+        nickname: agent.nickname || agent.agent_id,
+        signing_public_key: keys.signing_public_key,
+        fingerprint: keys.fingerprint
+      };
+    } catch(e) {
+      currentAgentKeys[agent.agent_id] = {
+        agent_id: agent.agent_id,
+        nickname: agent.nickname || agent.agent_id
+      };
+    }
+  }
+
+  // Check which backup agents don't match current agents
+  const matchedAgents = [];  // { backupAgent, currentAgent }
+  const unmatchedBackupAgents = [];  // backup agents with no key match
+
+  for (const ba of backup.agents) {
+    // Try to find matching current agent by signing_public_key or fingerprint
+    let matched = null;
+    for (const [cid, ck] of Object.entries(currentAgentKeys)) {
+      if (ba.signing_public_key && ck.signing_public_key && ba.signing_public_key === ck.signing_public_key) {
+        matched = ck;
+        break;
+      }
+      if (ba.fingerprint && ck.fingerprint && ba.fingerprint === ck.fingerprint) {
+        matched = ck;
+        break;
+      }
+      // Also match by agent_id
+      if (ba.agent_id === cid) {
+        matched = ck;
+        break;
+      }
+    }
+
+    if (matched) {
+      matchedAgents.push({ backupAgent: ba, currentAgent: matched });
+    } else {
+      unmatchedBackupAgents.push(ba);
+    }
+  }
+
+  // If there are unmatched agents, show matching modal
+  if (unmatchedBackupAgents.length > 0 && Object.keys(currentAgentKeys).length > 0) {
+    pendingBackup = backup;
+    pendingMatchMap = {};
+
+    // Auto-add matched ones
+    for (const m of matchedAgents) {
+      pendingMatchMap[m.backupAgent.agent_id] = m.currentAgent.agent_id;
+    }
+
+    showBackupMatchModal(unmatchedBackupAgents, Object.values(currentAgentKeys));
+  } else {
+    // All matched or no current agents, proceed directly
+    await doImportBackup(backup, matchedAgents.reduce((map, m) => { map[m.backupAgent.agent_id] = m.currentAgent.agent_id; return map; }, {}));
+  }
+}
+
+function showBackupMatchModal(unmatchedAgents, currentAgentList) {
+  const container = document.getElementById('backupMatchList');
+  container.innerHTML = '';
+
+  for (const ba of unmatchedAgents) {
+    const row = document.createElement('div');
+    row.className = 'key-match-row';
+    row.innerHTML = `
+      <label title="${ba.agent_id}">${ba.nickname || ba.agent_id}</label>
+      <select id="match-${ba.agent_id}" data-backup-agent="${ba.agent_id}">
+        <option value="">-- 不导入 --</option>
+        ${currentAgentList.map(ca => `<option value="${ca.agent_id}">${ca.nickname || ca.agent_id}</option>`).join('')}
+      </select>
+    `;
+    container.appendChild(row);
+  }
+
+  showModal('backupMatch');
+}
+
+async function applyBackupMatch() {
+  // Collect user selections
+  const selects = document.querySelectorAll('#backupMatchList select');
+  for (const sel of selects) {
+    const backupAgentId = sel.dataset.backupAgent;
+    const chosenAgentId = sel.value;
+    if (chosenAgentId) {
+      pendingMatchMap[backupAgentId] = chosenAgentId;
+    }
+  }
+
+  hideModal('backupMatch');
+  await doImportBackup(pendingBackup, pendingMatchMap);
+  pendingBackup = null;
+  pendingMatchMap = {};
+}
+
+async function skipBackupMatch() {
+  hideModal('backupMatch');
+  // Import only the already-matched agents (without the unmatched ones)
+  await doImportBackup(pendingBackup, pendingMatchMap);
+  pendingBackup = null;
+  pendingMatchMap = {};
+}
+
+async function doImportBackup(backup, matchMap) {
+  try {
+    showToast('正在导入备份...', '', 8000);
+    let importedCount = 0;
+    let importedMessages = 0;
+
+    for (const ba of backup.agents) {
+      const targetAgentId = matchMap[ba.agent_id];
+      if (!targetAgentId) continue;
+
+      // Import friends (via API if possible, or just save to cache)
+      // The plugin uses local SQLite, so we store to localStorage cache
+      for (const friend of (ba.friends || [])) {
+        try {
+          // Try to add friend via API
+          await api('POST', '/api/friends/add-by-fingerprint', {
+            agent_id: targetAgentId,
+            fingerprint: friend.fingerprint,
+            ai_name: friend.ai_name,
+            ai_avatar: friend.ai_avatar
+          });
+        } catch(e) {
+          // Friend might already exist, that's fine
+        }
+      }
+
+      // Import chat messages to localStorage cache
+      if (ba.chatData) {
+        const chatCacheKey = `aicq_chat_${targetAgentId}`;
+        try {
+          const existing = JSON.parse(localStorage.getItem(chatCacheKey) || '{}');
+          for (const [targetKey, messages] of Object.entries(ba.chatData)) {
+            existing[targetKey] = messages;
+          }
+          localStorage.setItem(chatCacheKey, JSON.stringify(existing));
+          importedMessages += Object.keys(ba.chatData).length;
+        } catch(e) {}
+      }
+
+      importedCount++;
+    }
+
+    // Refresh UI
+    await loadAgents();
+    await loadFriends();
+    await loadGroups();
+
+    hideModal('settings');
+    showToast(`导入完成！已导入 ${importedCount} 个 Agent 的数据，${importedMessages} 个会话记录。`, '', 6000);
+  } catch (e) {
+    alert('导入失败: ' + e.message);
+  }
+}
+
+// ─── Init ───────────────────────────────────────────────────────────
+async function init() {
+  await loadAgents();
+  await loadFriends();
+  await loadGroups();
+  // Auto-select first agent
+  const sel = document.getElementById('agentSelect');
+  if (sel.options.length > 1) {
+    currentAgentId = sel.options[1].value;
+    sel.value = currentAgentId;
+  }
+
+  // Load chat cache from localStorage
+  const cached = loadChatFromLocalStorage();
+  if (cached && cached.currentAgentId) {
+    // Restore cache if agent still exists
+    const sel2 = document.getElementById('agentSelect');
+    let agentExists = false;
+    for (let i = 0; i < sel2.options.length; i++) {
+      if (sel2.options[i].value === cached.currentAgentId) {
+        agentExists = true;
+        break;
+      }
+    }
+    if (agentExists) {
+      currentAgentId = cached.currentAgentId;
+      sel2.value = currentAgentId;
+      if (cached.currentTarget) {
+        currentTarget = cached.currentTarget;
+        await loadFriends();
+        await loadGroups();
+        // Will load messages from server, which is more reliable
+        if (currentTarget) {
+          selectTarget(currentTarget.id, currentTarget.name, currentTarget.type, currentTarget.isOnline, currentTarget.silent);
+        }
+      }
+    }
+  }
+
+  // Show login reminder toast
+  showToast('提醒：聊天记录仅保存在本地浏览器中，清除缓存数据或删除浏览器内容将丢失', 'warning', 8000);
+}
+
+init();
+
+// Periodic refresh and auto-save
+setInterval(async () => {
+  if (currentAgentId) {
+    await loadFriends();
+    await loadGroups();
+    saveChatToLocalStorage();
+  }
+}, 30000);
+</script>
+</body>
+</html>

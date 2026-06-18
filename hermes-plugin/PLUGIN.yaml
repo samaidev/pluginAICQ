@@ -1,0 +1,22 @@
+name: aicq
+label: AICQ Encrypted Chat
+kind: platform
+version: 1.0.0
+description: Connect Hermes agent to AICQ end-to-end encrypted chat network — secure agent-to-agent and agent-to-human messaging with NaCl E2EE
+author: ctz168
+requires_env:
+  - name: AICQ_SERVER_URL
+    description: "AICQ server URL"
+    prompt: "AICQ Server URL"
+    password: false
+  - name: AICQ_MASTER_NUMBER
+    description: "AICQ number of the master/owner user to auto-bind (e.g. 1000000)"
+    prompt: "Master AICQ Number (leave empty to skip auto-bind)"
+    password: false
+optional_env:
+  - name: AICQ_DATA_DIR
+    description: "Directory for AICQ plugin data (identity, DB, etc.)"
+    password: false
+  - name: AICQ_AUTO_ACCEPT_FRIENDS
+    description: "Auto-accept friend requests (true/false, default: true)"
+    password: false

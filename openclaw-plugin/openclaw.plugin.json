@@ -1,0 +1,170 @@
+{
+  "kind": "channel",
+  "id": "aicq-chat",
+  "name": "AICQ Encrypted Chat",
+  "version": "3.7.0",
+  "description": "End-to-end encrypted chat channel via AICQ protocol — in-process Channel plugin using OpenClaw Channel SDK",
+  "entry": "index.js",
+  "activation": {
+    "onStartup": true
+  },
+  "enabledByDefault": true,
+  "channels": [
+    "aicq-chat"
+  ],
+  "channelConfigs": {
+    "aicq-chat": {
+      "label": "AICQ Encrypted Chat",
+      "description": "End-to-end encrypted chat channel via AICQ protocol",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "type": "string",
+            "description": "绑定到 OpenClaw 智能体的账户 ID",
+            "default": "{{agent.id}}"
+          },
+          "autoAcceptFriends": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否自动接受好友请求"
+          },
+          "serverUrl": {
+            "type": "string",
+            "description": "AICQ 服务器地址",
+            "default": "https://aicq.me"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable this channel account"
+          },
+          "dmPolicy": {
+            "type": "string",
+            "default": "allowlist",
+            "description": "DM access policy: allowlist (friends only), open, or disabled",
+            "enum": [
+              "allowlist",
+              "open",
+              "disabled"
+            ]
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "允许发消息的好友 ID 列表（dmPolicy 为 allowlist 时生效）"
+          }
+        },
+        "required": [
+          "accountId"
+        ]
+      },
+      "uiHints": {
+        "accountId": {
+          "label": "Account ID",
+          "help": "The OpenClaw agent ID to bind as AICQ account"
+        },
+        "autoAcceptFriends": {
+          "label": "Auto Accept Friends",
+          "help": "Automatically accept incoming friend requests"
+        },
+        "serverUrl": {
+          "label": "AICQ Server URL",
+          "help": "The AICQ signaling server URL for WebSocket connections"
+        },
+        "dmPolicy": {
+          "label": "DM Policy",
+          "help": "Who can send direct messages: allowlist (friends only), open, or disabled"
+        },
+        "allowFrom": {
+          "label": "Allow From",
+          "help": "Friend IDs allowed to send DMs (used when dmPolicy is allowlist)"
+        }
+      }
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "serverUrl": {
+        "type": "string",
+        "description": "AICQ 服务器地址",
+        "default": "https://aicq.me"
+      },
+      "autoAcceptFriends": {
+        "type": "boolean",
+        "description": "自动接受好友请求",
+        "default": true
+      },
+      "debug": {
+        "type": "boolean",
+        "description": "Enable verbose debug logging",
+        "default": false
+      }
+    }
+  },
+  "uiHints": {
+    "serverUrl": {
+      "label": "AICQ Server URL",
+      "help": "The AICQ signaling server URL for WebSocket connections."
+    },
+    "autoAcceptFriends": {
+      "label": "Auto Accept Friends",
+      "help": "Automatically accept incoming friend requests."
+    },
+    "debug": {
+      "label": "Debug Mode",
+      "help": "Enable verbose logging for troubleshooting.",
+      "advanced": true
+    }
+  },
+  "contracts": {
+    "tools": [
+      "chat-friend",
+      "chat-send",
+      "chat-export-key"
+    ],
+    "gateway": [
+      "aicq.status",
+      "aicq.friends.list",
+      "aicq.friends.add",
+      "aicq.friends.remove",
+      "aicq.friends.requests",
+      "aicq.friends.acceptRequest",
+      "aicq.friends.rejectRequest",
+      "aicq.sessions.list",
+      "aicq.identity.info",
+      "aicq.agent.create",
+      "aicq.agent.delete",
+      "aicq.chat.history",
+      "aicq.chat.send",
+      "aicq.chat.delete",
+      "aicq.chat.userUpload",
+      "aicq.chat.userfiles",
+      "aicq.chat.streamChunk",
+      "aicq.chat.streamEnd",
+      "aicq.groups.list",
+      "aicq.groups.create",
+      "aicq.groups.join",
+      "aicq.groups.messages",
+      "aicq.groups.silent"
+    ]
+  },
+  "runtime": "node",
+  "requires": {
+    "node": ">=18.0.0",
+    "packages": [
+      "sql.js",
+      "tweetnacl",
+      "tweetnacl-util",
+      "ws",
+      "qrcode",
+      "express"
+    ]
+  }
+}
