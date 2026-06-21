@@ -36,3 +36,10 @@ data/
 # Environment
 .env
 .env.local
+
+# npm auth (created by CI during npm publish — must never be committed)
+.npmrc
+
+# Secrets
+*.pem
+*.key
