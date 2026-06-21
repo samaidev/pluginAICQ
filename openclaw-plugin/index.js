@@ -417,6 +417,25 @@ async function registerFull(api) {
   } catch (e) {
     console.error("[AICQ Channel] Failed to register HTTP routes:", e.message);
   }
+
+  // ── Register agent tools ──────────────────────────────────────────
+  // These tools let the AI agent manage friends (chat-friend), send
+  // messages (chat-send), and export its identity key (chat-export-key)
+  // via tool calls. The tool definitions are in src/tools.js.
+  try {
+    if (typeof api.registerTool === "function") {
+      const { createAicqTools } = await import("./src/tools.js");
+      const tools = createAicqTools(runtime);
+      for (const tool of tools) {
+        api.registerTool(tool);
+      }
+      console.log(`[AICQ Channel] Registered ${tools.length} agent tools: ${tools.map(t => t.name).join(", ")}`);
+    } else {
+      console.warn("[AICQ Channel] api.registerTool not available — agent tools not registered");
+    }
+  } catch (e) {
+    console.error("[AICQ Channel] Failed to register agent tools:", e.message);
+  }
 }
 
 // ── Export the entry point ───────────────────────────────────────────
