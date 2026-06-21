@@ -572,10 +572,55 @@ _plugin.gateway = {
                     },
                     // Pass the abort signal so OpenClaw aborts the model run
                     // + tool calls when we call turnAbortController.abort().
-                    // This enables real-time interruption:
-                    //   - User sends a new message → we abort the current turn
-                    //   - User clicks Stop → stream_cancel → we abort the turn
                     abortSignal: turnAbortController.signal,
+                    // ── Tool call streaming ──────────────────────────────
+                    // Forward tool_call / tool_result events to the aicq.me
+                    // web UI as stream_chunk messages with chunkType=tool_call
+                    // / tool_result. The frontend renders these as tool cards
+                    // showing which tool was called, its input, and its output.
+                    onToolResult: async (payload) => {
+                      // onToolResult fires after a tool completes. The payload
+                      // is a ReplyPayload containing the tool result text.
+                      // We send it as a tool_result chunk so the UI can show
+                      // the tool's output in the tool card.
+                      try {
+                        if (payload?.text) {
+                          await runtime.chat.sendStreamChunk(
+                            resolvedAgentId,
+                            streamTarget,
+                            streamId,
+                            payload.text,
+                            "tool_result"
+                          );
+                          streamChunksSent++;
+                        }
+                      } catch (e) {
+                        console.warn("[AICQ Channel] onToolResult send failed:", e.message);
+                      }
+                    },
+                    onAgentToolResult: (event) => {
+                      // onAgentToolResult is a sync callback that fires with
+                      // { toolName, result, isError }. We send a tool_call
+                      // chunk so the UI shows the tool card with its name.
+                      try {
+                        const toolData = {
+                          name: event.toolName,
+                          input: event.result,
+                          success: !event.isError,
+                        };
+                        runtime.chat.sendStreamChunk(
+                          resolvedAgentId,
+                          streamTarget,
+                          streamId,
+                          JSON.stringify(toolData),
+                          "tool_call",
+                          toolData
+                        );
+                        streamChunksSent++;
+                      } catch (e) {
+                        console.warn("[AICQ Channel] onAgentToolResult send failed:", e.message);
+                      }
+                    },
                   },
                   dispatcherOptions: {
                     deliver: async (payload) => {
