@@ -441,6 +441,18 @@ _plugin.gateway = {
               // echo loop — only inbound user messages should be dispatched.
               if (msg._outbound) return;
 
+              // ── Real-time preemption ────────────────────────────────
+              // If there's an active AI turn in progress, abort it NOW so
+              // the user's new message gets immediate attention instead of
+              // being queued behind the current (potentially long) reply.
+              // The aborted turn's partial output (if any) has already been
+              // streamed; we just stop generating more.
+              if (runtime.activeTurnAbort && !runtime.activeTurnAbort.signal.aborted) {
+                console.log("[AICQ Channel] New inbound message — aborting current turn for preemption");
+                runtime.activeTurnAbort.abort('preempted-by-new-message');
+              }
+              runtime.activeTurnAbort = null;
+
               const resolvedAgentId = agentId;
               const fromId = msg.from_id || msg.from || msg.sender_id;
               const isGroup = !!(msg.is_group || msg.isGroup);
@@ -480,6 +492,19 @@ _plugin.gateway = {
                 const streamTarget = fromId;
                 // Accumulate text for fallback persistence if stream_end fails
                 let accumulatedText = "";
+
+                // AbortController for this turn — allows real-time interruption
+                // when the user sends a new message (preempt) or clicks Stop.
+                // Passing abortSignal to dispatchReplyWithBufferedBlockDispatcher
+                // makes OpenClaw abort the underlying model run + tool calls.
+                const turnAbortController = new AbortController();
+                // Register this turn's abort controller so that:
+                // 1. When a new inbound message arrives, channel.js can abort
+                //    the current turn before starting a new one (real preemption).
+                // 2. When stream_cancel is received (user clicked Stop), we
+                //    abort the current turn.
+                runtime.activeTurnAbort = turnAbortController;
+                streamState.abortController = turnAbortController;
 
                 const ensureStreamStart = async () => {
                   if (streamStarted) return;
@@ -535,7 +560,7 @@ _plugin.gateway = {
                   // Configure block reply chunking so deliver() is called
                   // frequently with small text blocks (instead of one big
                   // block at the end). This gives the user a real streaming
-                  // experience: each block is then split into ~40-char
+                  // experience: each block is then split into ~20-char
                   // stream_chunk WS messages, and the stop button has time
                   // to be visible/clickable during the stream.
                   replyOptions: {
@@ -545,6 +570,12 @@ _plugin.gateway = {
                       breakPreference: "sentence",
                       flushOnParagraph: true,
                     },
+                    // Pass the abort signal so OpenClaw aborts the model run
+                    // + tool calls when we call turnAbortController.abort().
+                    // This enables real-time interruption:
+                    //   - User sends a new message → we abort the current turn
+                    //   - User clicks Stop → stream_cancel → we abort the turn
+                    abortSignal: turnAbortController.signal,
                   },
                   dispatcherOptions: {
                     deliver: async (payload) => {
@@ -596,6 +627,10 @@ _plugin.gateway = {
                 // After dispatch returns (all delivers completed), end the stream.
                 // This avoids the race where onSettled fires before deliver.
                 await endStreamSafe();
+                // Clear the active turn abort controller (turn is done)
+                if (runtime.activeTurnAbort === turnAbortController) {
+                  runtime.activeTurnAbort = null;
+                }
               }
             } catch (e) {
               console.error("[AICQ Channel] Inbound message handling error:", e.message, e.stack);

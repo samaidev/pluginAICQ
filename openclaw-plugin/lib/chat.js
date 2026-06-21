@@ -77,6 +77,12 @@ class ChatManager {
     if (state) {
       state.cancelled = true;
       console.log('[AICQ Chat] Marked stream', streamId?.slice(0, 8), 'as cancelled');
+      // Abort the OpenClaw agent run (model generation + tool calls)
+      // so it stops immediately, not just the chunk delivery.
+      if (state.abortController && !state.abortController.signal.aborted) {
+        console.log('[AICQ Chat] Aborting agent run for stream', streamId?.slice(0, 8));
+        state.abortController.abort('user-cancelled');
+      }
     }
     // Send stream_cancel_ack back so server can relay to the UI
     this.server.sendWS({
