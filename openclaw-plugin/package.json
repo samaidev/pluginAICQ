@@ -1,6 +1,6 @@
 {
   "name": "aicq-openclaw",
-  "version": "3.10.0",
+  "version": "3.11.0",
   "description": "AICQ End-to-end Encrypted Chat Channel Plugin for OpenClaw — In-process Channel SDK architecture with friend management, group chat, file transfer, and AI agent communication",
   "type": "module",
   "main": "index.js",

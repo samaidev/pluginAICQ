@@ -312,7 +312,12 @@ class ServerClient {
     // Dispatch to registered handlers
     const handlers = this._messageHandlers[type] || [];
     for (const handler of handlers) {
-      try { handler(data); } catch (e) { console.error(`[WS] Handler error for ${type}:`, e); }
+      try {
+        const result = handler(data);
+        if (result && typeof result.catch === 'function') {
+          result.catch(e => console.error(`[WS] Async handler error for ${type}:`, e.message));
+        }
+      } catch (e) { console.error(`[WS] Handler error for ${type}:`, e); }
     }
 
     // Wildcard handlers

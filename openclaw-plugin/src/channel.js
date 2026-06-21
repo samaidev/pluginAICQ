@@ -462,6 +462,65 @@ _plugin.gateway = {
               });
 
               if (routeResult?.agentId) {
+                // Generate a stream id for this reply turn. The aicq.me
+                // server uses stream_id to accumulate chunks and persist
+                // the final assembled text on stream_end.
+                const streamId = (typeof crypto !== "undefined" && crypto.randomUUID)
+                  ? crypto.randomUUID()
+                  : `stream_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+                // Register the stream so we can track user-initiated cancel
+                // (when the user clicks Stop in the web UI, the server sends
+                // a stream_cancel WS message; _handleStreamCancel sets
+                // streamState.cancelled = true).
+                const streamState = runtime.chat.registerStream(streamId);
+                let streamStarted = false;
+                let streamEnded = false;
+                let streamChunksSent = 0; // track whether any stream_chunk was actually sent
+                // Track the recipient so onSettled can finalize
+                const streamTarget = fromId;
+                // Accumulate text for fallback persistence if stream_end fails
+                let accumulatedText = "";
+
+                const ensureStreamStart = async () => {
+                  if (streamStarted) return;
+                  streamStarted = true;
+                  // No explicit "stream_start" message — server auto-creates
+                  // the StreamBuffer on the first stream_chunk.
+                };
+
+                const endStreamSafe = async () => {
+                  if (streamEnded || !streamStarted) return;
+                  streamEnded = true;
+                  runtime.chat.unregisterStream(streamId);
+                  // If no chunks were ever sent, don't send stream_end (server
+                  // would reject with "Stream not found" because no StreamBuffer
+                  // exists). Instead, fall back to sendMessage if we have text.
+                  if (!streamChunksSent) {
+                    console.log("[AICQ Channel] endStreamSafe: no chunks sent, skipping stream_end");
+                    if (accumulatedText && runtime.chat) {
+                      try {
+                        await runtime.chat.sendMessage(resolvedAgentId, streamTarget, accumulatedText, { isGroup: false });
+                      } catch (e2) {
+                        console.error("[AICQ Channel] Fallback sendMessage failed:", e2.message);
+                      }
+                    }
+                    return;
+                  }
+                  try {
+                    await runtime.chat.endStream(resolvedAgentId, streamTarget, streamId);
+                  } catch (e) {
+                    console.warn("[AICQ Channel] endStream failed:", e.message);
+                    // Fallback: persist via sendMessage so the message isn't lost
+                    if (accumulatedText && runtime.chat) {
+                      try {
+                        await runtime.chat.sendMessage(resolvedAgentId, streamTarget, accumulatedText, { isGroup: false });
+                      } catch (e2) {
+                        console.error("[AICQ Channel] Fallback sendMessage failed:", e2.message);
+                      }
+                    }
+                  }
+                };
+
                 await reply.dispatchReplyWithBufferedBlockDispatcher({
                   ctx: {
                     channelId: "aicq-chat",
@@ -473,19 +532,70 @@ _plugin.gateway = {
                     chatType: isGroup ? "group" : "dm",
                   },
                   cfg,
+                  // Configure block reply chunking so deliver() is called
+                  // frequently with small text blocks (instead of one big
+                  // block at the end). This gives the user a real streaming
+                  // experience: each block is then split into ~40-char
+                  // stream_chunk WS messages, and the stop button has time
+                  // to be visible/clickable during the stream.
+                  replyOptions: {
+                    blockReplyChunking: {
+                      minChars: 20,
+                      maxChars: 80,
+                      breakPreference: "sentence",
+                      flushOnParagraph: true,
+                    },
+                  },
                   dispatcherOptions: {
                     deliver: async (payload) => {
-                      if (runtime.chat && payload.text) {
-                        await runtime.chat.sendMessage(
-                          resolvedAgentId,
-                          fromId,
-                          payload.text,
-                          { isGroup }
-                        );
+                      if (!runtime.chat || !payload.text) return;
+                      // If the user clicked Stop, skip further delivers
+                      if (streamState.cancelled) {
+                        console.log('[AICQ Channel] Stream cancelled, skipping deliver');
+                        return;
                       }
+                      await ensureStreamStart();
+                      accumulatedText += payload.text;
+                      // Split the block into smaller chunks for character-level
+                      // streaming effect. aicq.me frontend appends each chunk
+                      // to the streaming bubble in real time.
+                      const text = payload.text;
+                      const CHUNK_SIZE = 20; // smaller chunks for finer streaming effect
+                      for (let i = 0; i < text.length; i += CHUNK_SIZE) {
+                        // Check cancel flag before sending each chunk
+                        if (streamState.cancelled) {
+                          console.log('[AICQ Channel] Stream cancelled mid-deliver, stopping');
+                          break;
+                        }
+                        const slice = text.slice(i, i + CHUNK_SIZE);
+                        try {
+                          await runtime.chat.sendStreamChunk(
+                            resolvedAgentId,
+                            streamTarget,
+                            streamId,
+                            slice,
+                            "text"
+                          );
+                          streamChunksSent++;
+                        } catch (e) {
+                          console.warn("[AICQ Channel] sendStreamChunk failed:", e.message);
+                          break;
+                        }
+                        // Small delay so the frontend can render incrementally
+                        // AND the stop button stays visible long enough to click.
+                        // Without this, all chunks arrive in <10ms and the user
+                        // never sees the streaming state.
+                        await new Promise((r) => setTimeout(r, 50));
+                      }
+                    },
+                    onReplyStart: async () => {
+                      await ensureStreamStart();
                     },
                   },
                 });
+                // After dispatch returns (all delivers completed), end the stream.
+                // This avoids the race where onSettled fires before deliver.
+                await endStreamSafe();
               }
             } catch (e) {
               console.error("[AICQ Channel] Inbound message handling error:", e.message, e.stack);

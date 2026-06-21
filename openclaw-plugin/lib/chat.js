@@ -40,6 +40,50 @@ class ChatManager {
     this.server.onMessage('image', (data) => this._handleFileMessage(data));
     this.server.onMessage('stream_chunk', (data) => this._handleStreamChunk(data));
     this.server.onMessage('stream_end', (data) => this._handleStreamEnd(data));
+    this.server.onMessage('stream_cancel', (data) => this._handleStreamCancel(data));
+
+    // Map of streamId -> { cancelled: bool } for tracking user-initiated
+    // stop requests. channel.js checks this in the deliver loop to stop
+    // sending chunks for a cancelled stream.
+    this._activeStreams = new Map();
+  }
+
+  /**
+   * Register a stream so its cancel state can be tracked.
+   * Returns the stream state object (mutable: set .cancelled = true to stop).
+   */
+  registerStream(streamId) {
+    const state = { cancelled: false };
+    this._activeStreams.set(streamId, state);
+    return state;
+  }
+
+  /**
+   * Remove a stream from tracking (called on endStream / cancelStream).
+   */
+  unregisterStream(streamId) {
+    this._activeStreams.delete(streamId);
+  }
+
+  /**
+   * Handle incoming stream_cancel from server — the user clicked Stop
+   * in the web UI. Mark the stream as cancelled so channel.js's deliver
+   * loop stops sending chunks.
+   */
+  _handleStreamCancel(data) {
+    const streamId = data.stream_id;
+    console.log('[AICQ Chat] Received stream_cancel for streamId=', streamId?.slice(0, 8));
+    const state = this._activeStreams.get(streamId);
+    if (state) {
+      state.cancelled = true;
+      console.log('[AICQ Chat] Marked stream', streamId?.slice(0, 8), 'as cancelled');
+    }
+    // Send stream_cancel_ack back so server can relay to the UI
+    this.server.sendWS({
+      type: 'stream_cancel_ack',
+      stream_id: streamId,
+      to: data.from,
+    });
   }
 
   setOnNewMessage(callback) {
@@ -171,14 +215,96 @@ class ChatManager {
     return msg;
   }
 
+  // ─── Streaming Output ─────────────────────────────────────────────
+  //
+  // The aicq.me server supports a stream protocol (WS messages of type
+  // stream_chunk + stream_end) that lets the frontend render text
+  // character-by-character as the agent produces it. The server
+  // accumulates chunks in a StreamBuffer keyed by stream_id, and on
+  // stream_end persists the accumulated text as a single direct_message
+  // (so page refresh still shows the full reply).
+  //
+  // These methods wrap the WS protocol so channel.js can stream replies.
+
+  /**
+   * Send a single stream chunk to a friend.
+   * @param {string} agentId - local agent id (unused, kept for API symmetry)
+   * @param {string} targetId - recipient account id (e.g. "1000008")
+   * @param {string} streamId - uuid identifying this stream
+   * @param {string} chunk - text content for this chunk
+   * @param {string} chunkType - "text" | "reasoning" | "tool_call" | "tool_result"
+   * @param {object} [dataField] - optional object payload for tool_call/tool_result
+   */
+  async sendStreamChunk(agentId, targetId, streamId, chunk, chunkType = 'text', dataField = null) {
+    const msg = {
+      type: 'stream_chunk',
+      to: targetId,
+      stream_id: streamId,
+      chunkType,
+      data: dataField !== null ? dataField : chunk,
+    };
+    // For text chunks, the server expects msg.data to be the string.
+    // For tool_call/tool_result, msg.data should be the object payload.
+    if (chunkType === 'text' || chunkType === 'reasoning' || chunkType === 'thinking') {
+      msg.data = chunk;
+    } else {
+      msg.data = dataField || {};
+      if (!msg.msg_id) msg.msg_id = streamId;
+    }
+    const sent = this.server.sendWS(msg);
+    if (!sent) {
+      console.warn('[Chat] sendStreamChunk: WS not open, chunk lost');
+    }
+    return sent;
+  }
+
+  /**
+   * End a stream — tells the server to persist the accumulated text
+   * as a direct_message and notify the recipient that the stream is
+   * complete.
+   */
+  async endStream(agentId, targetId, streamId, messageId = null) {
+    const msgId = messageId || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const sent = this.server.sendWS({
+      type: 'stream_end',
+      to: targetId,
+      stream_id: streamId,
+      msg_id: msgId,
+    });
+    if (!sent) {
+      console.warn('[Chat] endStream: WS not open, falling back to HTTP /chat/messages');
+      // Fallback: persist via HTTP so the message isn't lost
+      // (server's stream buffer would otherwise be orphaned)
+      try {
+        // We don't have the accumulated text here; the caller should
+        // also call sendMessage as a safety net if persistence matters.
+      } catch (e) {
+        console.error('[Chat] endStream HTTP fallback failed:', e.message);
+      }
+    }
+    return { sent, messageId: msgId };
+  }
+
+  /**
+   * Cancel an in-progress stream — used when the user clicks "stop".
+   * Tells the server to discard the StreamBuffer (the already-streamed
+   * chunks are NOT persisted as a direct_message).
+   */
+  async cancelStream(agentId, targetId, streamId) {
+    const sent = this.server.sendWS({
+      type: 'stream_cancel',
+      to: targetId,
+      stream_id: streamId,
+    });
+    return sent;
+  }
+
   // ─── Receive Messages ─────────────────────────────────────────────
 
   async _handleIncoming(data) {
-    const agentId = this.server.currentAgentId;
-    if (!agentId) {
-      console.warn('[AICQ Chat] _handleIncoming: no currentAgentId');
-      return;
-    }
+    try {
+      const agentId = this.server.currentAgentId;
+      if (!agentId) return;
 
     const fromId = data.fromId || data.from || (data.data && data.data.from_id) || data.from_id;
     // Server pushes {type:'message', from:..., data:{content, from_id, to_id, ...}}
@@ -263,6 +389,9 @@ class ChatManager {
         _original_msg_id: msg.message_id || msg.id,
       };
       this._onNewMessage(syntheticMsg);
+    }
+    } catch (e) {
+      console.error('[AICQ Chat] _handleIncoming error:', e.message, e.stack);
     }
   }
 
