@@ -38,7 +38,7 @@ AICQ 是一个端到端加密聊天频道插件，基于 OpenClaw Channel Plugin
 
 ```bash
 # 安装插件
-openclaw plugins install npm:aicq-chat-plugin
+openclaw plugins install aicq-openclaw
 
 # 配置频道
 openclaw channels add --channel aicq-chat

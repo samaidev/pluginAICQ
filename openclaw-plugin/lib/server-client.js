@@ -247,6 +247,20 @@ class ServerClient {
           nodeId: this.serverAccountId || this.currentAgentId,
           token: this.jwtToken,
         }));
+
+        // Send periodic ping to keep WS alive (aicq.me server closes idle
+        // connections after ~60s). Server responds to {type:"ping"} with
+        // {type:"pong"} — see handler/ws.go.
+        if (this._pingTimer) clearInterval(this._pingTimer);
+        this._pingTimer = setInterval(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            try {
+              this.ws.send(JSON.stringify({ type: 'ping' }));
+            } catch (e) {
+              console.warn('[WS] Ping send failed:', e.message);
+            }
+          }
+        }, 25000); // every 25s — well under the 60s idle timeout
       });
 
       this.ws.on('message', (raw) => {
@@ -261,6 +275,7 @@ class ServerClient {
       this.ws.on('close', () => {
         console.log('[WS] Disconnected');
         this.connected = false;
+        if (this._pingTimer) { clearInterval(this._pingTimer); this._pingTimer = null; }
         this._scheduleReconnect();
       });
 

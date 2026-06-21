@@ -194,7 +194,7 @@ async function handleGatewayMethod(method, kwargs = {}) {
       _db.removeFriend(currentAgentId, kwargs.friend_id);
       return { success: true };
     case "aicq.friends.requests":
-      return { requests: _db.getPendingRequests(currentAgentId) };
+      return { requests: await _handshake.getPendingRequests(currentAgentId) };
     case "aicq.friends.acceptRequest":
       return await _handshake.acceptRequest(currentAgentId, kwargs.request_id);
     case "aicq.friends.rejectRequest":

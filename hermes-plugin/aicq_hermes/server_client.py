@@ -162,7 +162,7 @@ class AicqServerClient:
         """Add a friend by their AICQ number (e.g. '1000000')."""
         # First resolve the number to an account ID
         data = await self._request_with_refresh(
-            "GET", f"{self.api_base}/accounts/resolve?number={aicq_number}",
+            "GET", f"{self.api_base}/accounts/lookup?number={aicq_number}",
         )
         account_id = data.get("account_id") or data.get("id")
         if not account_id:

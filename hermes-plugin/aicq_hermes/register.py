@@ -23,12 +23,23 @@ def check_requirements() -> bool:
         return False
 
 
-def validate_config(config: dict) -> list[str]:
-    """Validate the plugin configuration. Returns list of errors."""
-    errors = []
-    if not config.get("AICQ_SERVER_URL"):
-        errors.append("AICQ_SERVER_URL is required")
-    return errors
+def validate_config(config) -> bool:
+    """Validate the plugin configuration. Returns True if valid."""
+    import os
+    # Hermes gateway passes a PlatformConfig object, not a dict.
+    server_url = None
+    if isinstance(config, dict):
+        server_url = config.get("AICQ_SERVER_URL")
+    elif hasattr(config, 'env') and isinstance(config.env, dict):
+        server_url = config.env.get("AICQ_SERVER_URL")
+    elif hasattr(config, 'AICQ_SERVER_URL'):
+        server_url = config.AICQ_SERVER_URL
+    if not server_url:
+        server_url = os.environ.get("AICQ_SERVER_URL")
+    if not server_url:
+        logger.warning("AICQ_SERVER_URL not configured")
+        return False
+    return True
 
 
 def register(ctx):

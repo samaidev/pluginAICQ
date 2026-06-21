@@ -39,13 +39,35 @@ class AicqPlatformAdapter:
         )
     """
 
-    def __init__(self, config: dict):
-        self.config = config
-        self.server_url = config.get("AICQ_SERVER_URL", "https://aicq.me")
-        self.master_number = config.get("AICQ_MASTER_NUMBER", "")
-        self.data_dir = config.get("AICQ_DATA_DIR", os.path.expanduser("~/.aicq-hermes"))
-        self.auto_accept = config.get("AICQ_AUTO_ACCEPT_FRIENDS", "true").lower() == "true"
-        self.agent_id = config.get("agent_id", "default")
+    def __init__(self, config):
+        # Hermes gateway passes a PlatformConfig object (not dict).
+        # Normalize so .get() / env-var fallback work regardless of type.
+        if isinstance(config, dict):
+            self.config = config
+        elif hasattr(config, 'env') and isinstance(config.env, dict):
+            self.config = dict(config.env)
+        elif hasattr(config, '__dict__'):
+            self.config = {k: v for k, v in vars(config).items() if not k.startswith('_')}
+        else:
+            self.config = {}
+
+        self.server_url = (
+            self.config.get("AICQ_SERVER_URL")
+            or os.environ.get("AICQ_SERVER_URL", "https://aicq.me")
+        )
+        self.master_number = (
+            self.config.get("AICQ_MASTER_NUMBER")
+            or os.environ.get("AICQ_MASTER_NUMBER", "")
+        )
+        self.data_dir = (
+            self.config.get("AICQ_DATA_DIR")
+            or os.environ.get("AICQ_DATA_DIR", os.path.expanduser("~/.aicq-hermes"))
+        )
+        self.auto_accept = (
+            self.config.get("AICQ_AUTO_ACCEPT_FRIENDS")
+            or os.environ.get("AICQ_AUTO_ACCEPT_FRIENDS", "true")
+        ).lower() == "true"
+        self.agent_id = self.config.get("agent_id", "default")
 
         os.makedirs(self.data_dir, exist_ok=True)
 
@@ -59,6 +81,10 @@ class AicqPlatformAdapter:
         self._master_bound = False
         self._running = False
         self._message_handler = None  # Hermes handle_message callback
+        self._fatal_error_handler = None  # Hermes fatal error callback
+        self._session_store = None  # Hermes session store
+        self._busy_session_handler = None  # Hermes busy session handler
+        self._topic_recovery_fn = None  # Hermes topic recovery fn
 
     # ── Hermes Platform Adapter Interface ───────────────────────────────
 
@@ -232,6 +258,54 @@ class AicqPlatformAdapter:
     def set_message_handler(self, handler):
         """Set the Hermes message handler (called by gateway to receive messages)."""
         self._message_handler = handler
+
+    def set_fatal_error_handler(self, handler):
+        """Set the Hermes fatal error handler (required by gateway)."""
+        self._fatal_error_handler = handler
+
+    def set_session_store(self, store):
+        """Set the Hermes session store (required by gateway).
+        
+        The session store allows the adapter to persist and restore
+        conversation state across gateway restarts.
+        """
+        self._session_store = store
+
+    def set_busy_session_handler(self, handler):
+        """Set handler for when a session is busy (required by gateway).
+        
+        Called when a message arrives for a chat that already has
+        an active agent session running.
+        """
+        self._busy_session_handler = handler
+
+    def set_topic_recovery_fn(self, fn):
+        """Set topic recovery function (required by gateway).
+        
+        Used by platforms like Telegram that support topics/threads.
+        AICQ does not use topics, so this is a no-op.
+        """
+        self._topic_recovery_fn = fn
+
+    @property
+    def is_connected(self):
+        """Whether the adapter is currently connected (required by gateway)."""
+        return self._connected
+
+    @property
+    def platform(self):
+        """Platform identifier (required by gateway for logging/state)."""
+        from enum import Enum
+        if not hasattr(self, '_platform_enum'):
+            class PlatformEnum(Enum):
+                aicq = "aicq"
+            self._platform_enum = PlatformEnum.aicq
+        return self._platform_enum
+
+    # Fatal error properties (required by gateway for error handling)
+    fatal_error_code = None
+    fatal_error_message = None
+    fatal_error_retryable = False
 
     async def _fetch_initial_unread(self):
         """Fetch unread messages from all friends on startup."""

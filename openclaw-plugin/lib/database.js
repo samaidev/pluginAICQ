@@ -358,7 +358,22 @@ class PluginDatabase {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, agent_id, target_id, from_id, to_id, type, content, file_url, file_name, is_group, JSON.stringify(mentions), now, status]
     );
-    return { id, timestamp: now };
+    // Return the full message object so channel.js callback can read
+    // from_id / content / type / etc.
+    return {
+      id,
+      agent_id,
+      target_id,
+      from_id,
+      to_id,
+      type,
+      content,
+      file_url,
+      file_name,
+      is_group,
+      timestamp: now,
+      status,
+    };
   }
 
   getChatHistory(agentId, targetId, { limit = 50, before = null } = {}) {

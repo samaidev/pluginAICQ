@@ -16,7 +16,7 @@ v3.7 采用官方 OpenClaw Channel Plugin SDK，使用 `defineChannelPluginEntry
 
 ```bash
 # 安装插件
-openclaw plugins install npm:aicq-chat-plugin
+openclaw plugins install aicq-openclaw
 
 # 配置频道
 openclaw channels add --channel aicq-chat --name "AICQ Chat"
@@ -70,7 +70,7 @@ openclaw gateway restart
 ## 迁移指南 (v3.7 → v3.7)
 
 1. 卸载旧版：`openclaw plugins uninstall aicq-chat`
-2. 安装新版：`openclaw plugins install npm:aicq-chat-plugin`
+2. 安装新版：`openclaw plugins install aicq-openclaw`
 3. 配置频道：`openclaw channels add --channel aicq-chat`
 4. 重启 gateway：`openclaw gateway restart`
 5. 旧版数据（密钥、好友、消息）会自动迁移

@@ -3,7 +3,7 @@
  * AICQ Chat Plugin — CLI Entry Point (v3.7 Channel)
  *
  * Usage:
- *   openclaw plugins install npm:aicq-chat-plugin   Install via openclaw CLI
+ *   openclaw plugins install aicq-openclaw   Install via openclaw CLI
  *   openclaw plugins uninstall aicq-chat            Uninstall old version
  *   openclaw gateway restart                        Restart gateway
  *   aicq-plugin                    Start plugin server (standalone mode)
@@ -49,7 +49,7 @@ AICQ 是一个端到端加密聊天频道插件，基于 OpenClaw Channel 架构
 ## 一键启动
 
 \`\`\`bash
-openclaw plugins install npm:aicq-chat-plugin
+openclaw plugins install aicq-openclaw
 openclaw gateway restart
 \`\`\`
 
@@ -290,7 +290,7 @@ if (command === '--help' || command === '-h') {
 AICQ Chat Plugin v3.7 — End-to-End Encrypted Chat for OpenClaw (Channel SDK)
 
 Usage:
-  openclaw plugins install npm:aicq-chat-plugin   Install plugin via openclaw CLI
+  openclaw plugins install aicq-openclaw   Install plugin via openclaw CLI
   openclaw plugins uninstall aicq-chat            Uninstall old version
   openclaw gateway restart                        Restart gateway after install
   aicq-plugin [command] [options]                 Advanced usage
@@ -348,7 +348,7 @@ console.log('');
 console.log('[AICQ] Channel Plugin uses OpenClaw Channel SDK (defineChannelPluginEntry).');
 console.log('[AICQ] It runs in-process with OpenClaw — no standalone server needed.');
 console.log('[AICQ] To activate:');
-console.log('  openclaw plugins install npm:aicq-chat-plugin');
+console.log('  openclaw plugins install aicq-openclaw');
 console.log('  openclaw gateway restart');
 console.log('');
 console.log(`[AICQ] Server: ${serverUrl}`);

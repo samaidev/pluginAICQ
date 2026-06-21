@@ -31,6 +31,9 @@ class ChatManager {
     this.server.onMessage('message', (data) => this._handleIncoming(data));
     this.server.onMessage('group_message', (data) => this._handleGroupIncoming(data));
     this.server.onMessage('handshake_initiate', (data) => this._handleHandshakeRequest(data));
+    this.server.onMessage('friend_request', (data) => this._handleServerFriendRequest(data));
+    this.server.onMessage('friend_request_accepted', (data) => this._handleServerFriendRequestAccepted(data));
+    this.server.onMessage('friend_added', (data) => this._handleServerFriendAdded(data));
     this.server.onMessage('presence', (data) => this._handlePresence(data));
     this.server.onMessage('file_chunk', (data) => this._handleFileChunk(data));
     this.server.onMessage('file', (data) => this._handleFileMessage(data));
@@ -41,6 +44,15 @@ class ChatManager {
 
   setOnNewMessage(callback) {
     this._onNewMessage = callback;
+  }
+
+  /**
+   * Register a callback for real-time friend_request events.
+   * Called by channel.js to immediately accept incoming friend requests
+   * without waiting for the next startAccount cycle.
+   */
+  setOnAutoAccept(callback) {
+    this._onAutoAccept = callback;
   }
 
   // ─── Send Messages ────────────────────────────────────────────────
@@ -73,6 +85,10 @@ class ChatManager {
         mentions,
         status: sent ? 'sent' : 'pending',
       });
+      // Tag outbound messages so the channel.js dispatch callback can
+      // skip them (otherwise the agent's own replies get re-dispatched
+      // as inbound, causing an infinite echo loop).
+      msg._outbound = true;
 
       if (this._onNewMessage) this._onNewMessage(msg);
       return msg;
@@ -90,26 +106,38 @@ class ChatManager {
       }
     }
 
-    // Send via WebSocket relay
+    // Send via WebSocket relay — use 'message' type so the aicq.me
+    // server-side handleMessage path runs (which persists the message
+    // and relays to the recipient via WS). 'relay' is a different code
+    // path that doesn't persist HTTP-side.
     const sent = this.server.sendWS({
-      type: 'relay',
-      targetId: targetId,
-      payload,
+      type: 'message',
+      to: targetId,
+      data: {
+        to_id: targetId,
+        type: type,
+        content: content,
+        msgType: type,
+      },
     });
 
-    // Also try REST fallback
-    if (!sent) {
-      try {
-        await this.server._request('POST', '/messages/send', {
-          targetId,
-          payload,
-        });
-      } catch (e) {
-        // Queue offline
+    // Also send via HTTP API for guaranteed persistence (the WS path
+    // is best-effort; if the recipient is offline the message may be
+    // lost without the HTTP save).
+    try {
+      await this.server._request('POST', '/chat/messages', {
+        to_id: targetId,
+        type: type,
+        content: content,
+      });
+    } catch (e) {
+      console.warn('[Chat] HTTP /chat/messages fallback failed:', e.message);
+      // Queue offline if both WS and HTTP failed
+      if (!sent) {
         this.db.enqueueOffline({
           agent_id: agentId,
           target_id: targetId,
-          data: JSON.stringify({ type: 'relay', targetId, payload }),
+          data: JSON.stringify({ type: 'message', to: targetId, data: { content, type } }),
         });
       }
     }
@@ -134,6 +162,10 @@ class ChatManager {
     if (session) {
       this.db.incrementSessionMessageCount(agentId, targetId);
     }
+    // Tag outbound messages so the channel.js dispatch callback can
+    // skip them (otherwise the agent's own replies get re-dispatched
+    // as inbound, causing an infinite echo loop).
+    msg._outbound = true;
 
     if (this._onNewMessage) this._onNewMessage(msg);
     return msg;
@@ -141,13 +173,29 @@ class ChatManager {
 
   // ─── Receive Messages ─────────────────────────────────────────────
 
-  _handleIncoming(data) {
+  async _handleIncoming(data) {
     const agentId = this.server.currentAgentId;
-    if (!agentId) return;
+    if (!agentId) {
+      console.warn('[AICQ Chat] _handleIncoming: no currentAgentId');
+      return;
+    }
 
-    const fromId = data.fromId || data.from;
-    let content = data.payload || data.data || '';
-    const msgType = data.msgType || data.type || 'text';
+    const fromId = data.fromId || data.from || (data.data && data.data.from_id) || data.from_id;
+    // Server pushes {type:'message', from:..., data:{content, from_id, to_id, ...}}
+    // Some legacy paths push {type:'relay', from:..., payload:'...'}
+    let content;
+    if (data.data && typeof data.data === 'object' && data.data.content !== undefined) {
+      content = data.data.content;
+    } else if (typeof data.payload === 'string') {
+      content = data.payload;
+    } else if (typeof data.data === 'string') {
+      content = data.data;
+    } else if (typeof data.content === 'string') {
+      content = data.content;
+    } else {
+      content = '';
+    }
+    const msgType = data.msgType || (data.data && data.data.type) || data.type || 'text';
 
     // Try to decrypt if we have a session key
     const session = this.db.loadSession(agentId, fromId);
@@ -187,7 +235,15 @@ class ChatManager {
       status: 'delivered',
     });
 
-    if (this._onNewMessage) this._onNewMessage(msg);
+    if (this._onNewMessage) {
+      try {
+        await this._onNewMessage(msg);
+      } catch (e) {
+        console.error('[AICQ Chat] _onNewMessage error:', e.message, e.stack);
+      }
+    } else {
+      console.warn('[AICQ Chat] _onNewMessage is not registered!');
+    }
 
     // If this was a file/image message, also inject a synthetic message
     // telling the AI agent about the local file path
@@ -285,6 +341,112 @@ class ChatManager {
       requester_id: data.requesterId || data.from,
       requester_public_key: data.requesterPublicKey || data.exchangePublicKey || '',
     });
+  }
+
+  /**
+   * Handle server-pushed `friend_request` WS events.
+   *
+   * The AICQ server uses a simple HTTP-based friend-request flow
+   * (POST /friends/request, POST /friends/requests/:id/accept).
+   * When user A sends a friend request to AI agent B, the server pushes
+   * a `friend_request` WS message to B. We persist it into the local
+   * pending_requests table so that:
+   *   1. The OpenClaw dashboard can list pending requests via
+   *      aicq.friends.requests gateway method.
+   *   2. The auto-accept logic in channel.js can pick it up on the
+   *      next startAccount cycle (or immediately via _tryAutoAccept).
+   *
+   * The request_id from the server is stored as session_id so that
+   * acceptRequest/rejectRequest can call the server API directly.
+   */
+  _handleServerFriendRequest(data) {
+    const agentId = this.server.currentAgentId;
+    if (!agentId) return;
+
+    const requestId = data.request_id || data.id;
+    if (!requestId) {
+      console.warn('[AICQ Chat] friend_request WS missing request_id', data);
+      return;
+    }
+
+    this.db.savePendingRequest({
+      agent_id: agentId,
+      session_id: requestId,
+      requester_id: data.from_id || data.from || '',
+      requester_public_key: data.from_public_key || data.public_key || '',
+    });
+    console.log(`[AICQ Chat] Received friend_request from ${data.from_id || data.from} (request_id=${requestId})`);
+
+    // Opportunistically try auto-accept if a callback is registered.
+    if (typeof this._onAutoAccept === 'function') {
+      this._onAutoAccept({
+        request_id: requestId,
+        from_id: data.from_id || data.from,
+        from_public_key: data.from_public_key || '',
+      }).catch((e) =>
+        console.warn('[AICQ Chat] Auto-accept failed:', e.message)
+      );
+    }
+  }
+
+  /**
+   * Handle server-pushed `friend_request_accepted` WS events.
+   *
+   * Fired when the OTHER side accepted OUR friend request. We add the
+   * friend locally so subsequent messages can be encrypted/sent.
+   */
+  _handleServerFriendRequestAccepted(data) {
+    const agentId = this.server.currentAgentId;
+    if (!agentId) return;
+
+    const friendId = data.friend_id || data.by_id || data.from_id;
+    if (!friendId) return;
+
+    // Avoid double-inserting if already a friend
+    const existing = this.db.listFriends(agentId).find((f) => f.id === friendId);
+    if (existing) return;
+
+    this.db.addFriend({
+      agent_id: agentId,
+      id: friendId,
+      public_key: data.friend_public_key || data.public_key || '',
+      fingerprint: data.friend_public_key
+        ? require('./crypto').computeFingerprint(data.friend_public_key)
+        : '',
+      friend_type: data.friend_type || 'human',
+      ai_name: data.friend_name || data.friend_agent_name || '',
+    });
+    console.log(`[AICQ Chat] friend_request_accepted — added friend ${friendId}`);
+  }
+
+  /**
+   * Handle server-pushed `friend_added` WS events.
+   *
+   * Fired as a confirmation after we accept a friend request — the
+   * server has created the bidirectional friendship. We ensure the
+   * friend is in our local DB.
+   */
+  _handleServerFriendAdded(data) {
+    const agentId = this.server.currentAgentId;
+    if (!agentId) return;
+
+    const friendId = data.friend_id || data.id;
+    if (!friendId) return;
+
+    const existing = this.db.listFriends(agentId).find((f) => f.id === friendId);
+    if (existing) return;
+
+    this.db.addFriend({
+      agent_id: agentId,
+      id: friendId,
+      public_key: data.friend_public_key || data.public_key || '',
+      fingerprint: data.friend_public_key
+        ? require('./crypto').computeFingerprint(data.friend_public_key)
+        : '',
+      friend_type: data.friend_type || 'human',
+      ai_name: data.friend_name || data.friend_agent_name || '',
+    });
+    console.log(`[AICQ Chat] friend_added — added friend ${friendId}`);
   }
 
   _handlePresence(data) {

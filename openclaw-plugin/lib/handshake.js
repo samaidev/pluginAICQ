@@ -81,65 +81,118 @@ class HandshakeManager {
   }
 
   /**
-   * List pending handshake requests
+   * List pending handshake requests.
+   *
+   * Tries the server first (aicq.me-style friend_requests table).
+   * Falls back to local pending_requests table for legacy mode.
    */
   async getPendingRequests(agentId) {
-    return this.db.getPendingRequests(agentId);
+    try {
+      await this.server.ensureAuth(agentId);
+      const result = await this.server.listFriendRequests();
+      const received = Array.isArray(result?.received) ? result.received : [];
+      // Normalise to the same shape as local pending_requests rows.
+      return received
+        .filter((r) => r.status === 'pending')
+        .map((r) => ({
+          agent_id: agentId,
+          session_id: r.id, // server request id
+          requester_id: r.from_id,
+          requester_public_key: r.from_public_key || '',
+          timestamp: r.created_at,
+          message: r.message || '',
+          _source: 'server',
+        }));
+    } catch (e) {
+      console.warn('[Handshake] getPendingRequests: server query failed, falling back to local DB:', e.message);
+      return this.db.getPendingRequests(agentId);
+    }
   }
 
   /**
-   * Accept a pending handshake request
+   * Accept a pending friend request.
+   *
+   * Acceptance goes through the server's
+   * POST /friends/requests/:id/accept endpoint so that the server
+   * creates the bidirectional friendship and notifies the requester.
+   * After acceptance we also add the friend locally.
    */
-  async acceptRequest(agentId, sessionId) {
-    const request = this.db.getPendingRequests(agentId).find(r => r.session_id === sessionId);
-    if (!request) throw new Error('Request not found');
+  async acceptRequest(agentId, requestId) {
+    if (!requestId) throw new Error('request_id is required');
 
-    // Derive session key
+    // Try to fetch the requester's public key from server response
+    let requesterPublicKey = '';
+    let requesterId = '';
+    try {
+      const pending = await this.getPendingRequests(agentId);
+      const found = pending.find((r) => r.session_id === requestId);
+      if (found) {
+        requesterPublicKey = found.requester_public_key || '';
+        requesterId = found.requester_id || '';
+      }
+    } catch (e) {
+      console.warn('[Handshake] acceptRequest: failed to look up pending request:', e.message);
+    }
+
+    // Call server accept API
+    await this.server.ensureAuth(agentId);
+    await this.server.acceptFriendRequest(requestId);
+
+    // Derive session key (best-effort — only if we have the peer's public key)
     let sessionKey = null;
     try {
       const identity = this.identity.loadAgent(agentId);
-      if (identity && request.requester_public_key) {
+      if (identity && requesterPublicKey) {
         const { deriveSessionKey } = require('./crypto');
-        sessionKey = deriveSessionKey(identity.exchange_secret_key, request.requester_public_key);
+        sessionKey = deriveSessionKey(identity.exchange_secret_key, requesterPublicKey);
       }
     } catch (e) {
-      console.error('[Handshake] Session key derivation failed:', e.message);
+      console.warn('[Handshake] Session key derivation failed:', e.message);
     }
 
-    // Add friend
-    this.db.addFriend({
-      agent_id: agentId,
-      id: request.requester_id,
-      public_key: request.requester_public_key,
-      fingerprint: computeFingerprint(request.requester_public_key),
-      friend_type: 'ai',
-    });
-
-    // Save session
-    if (sessionKey) {
-      this.db.saveSession({
-        agent_id: agentId,
-        peer_id: request.requester_id,
-        session_key: sessionKey,
-      });
+    // Add friend locally (server already added bidirectionally)
+    if (requesterId) {
+      const { computeFingerprint } = require('./crypto');
+      // Don't duplicate
+      const exists = this.db.listFriends(agentId).find((f) => f.id === requesterId);
+      if (!exists) {
+        this.db.addFriend({
+          agent_id: agentId,
+          id: requesterId,
+          public_key: requesterPublicKey,
+          fingerprint: requesterPublicKey ? computeFingerprint(requesterPublicKey) : '',
+          friend_type: 'human',
+        });
+      }
+      if (sessionKey) {
+        this.db.saveSession({
+          agent_id: agentId,
+          peer_id: requesterId,
+          session_key: sessionKey,
+        });
+      }
     }
 
-    // Respond to server
-    await this.server.respondHandshake(sessionId, {
-      public_key: this.identity.loadAgent(agentId).exchange_public_key,
-    });
+    // Remove from local pending_requests (if it was stored there)
+    this.db.removePendingRequest(agentId, requestId);
 
-    // Remove pending request
-    this.db.removePendingRequest(agentId, sessionId);
-
-    return { success: true, friend_id: request.requester_id };
+    return { success: true, friend_id: requesterId };
   }
 
   /**
-   * Reject a pending handshake request
+   * Reject a pending friend request.
+   *
+   * Calls server's POST /friends/requests/:id/reject endpoint.
    */
-  async rejectRequest(agentId, sessionId) {
-    this.db.removePendingRequest(agentId, sessionId);
+  async rejectRequest(agentId, requestId) {
+    if (!requestId) throw new Error('request_id is required');
+    try {
+      await this.server.ensureAuth(agentId);
+      await this.server.rejectFriendRequest(requestId);
+    } catch (e) {
+      console.warn('[Handshake] rejectRequest: server call failed:', e.message);
+    }
+    this.db.removePendingRequest(agentId, requestId);
     return { success: true };
   }
 }

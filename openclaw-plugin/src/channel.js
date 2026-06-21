@@ -371,15 +371,23 @@ _plugin.gateway = {
           }
         }
 
-        // Auto-accept pending friend requests if autoAcceptFriends is true
-        if (account?.autoAcceptFriends && runtime.handleGateway) {
+        // Auto-accept pending friend requests if autoAcceptFriends is true.
+        // Read the flag from either the resolved account object (preferred)
+        // or the channel config section (fallback — some loaders only pass
+        // cfg/accountId and skip account).
+        const autoAccept =
+          account?.autoAcceptFriends ??
+          cfg?.channels?.["aicq-chat"]?.autoAcceptFriends ??
+          true; // default true per plugin schema
+        if (autoAccept && runtime.handleGateway) {
           try {
             const pendingResult = await runtime.handleGateway("aicq.friends.requests", {});
             if (pendingResult.requests && pendingResult.requests.length > 0) {
+              console.log(`[AICQ Channel] Auto-accepting ${pendingResult.requests.length} pending friend request(s)`);
               for (const req of pendingResult.requests) {
                 try {
-                  await runtime.handleGateway("aicq.friends.acceptRequest", { request_id: req.session_id });
-                  console.log(`[AICQ Channel] Auto-accepted friend request from ${req.requester_id}`);
+                  await runtime.handleGateway("aicq.friends.acceptRequest", { request_id: req.session_id || req.id });
+                  console.log(`[AICQ Channel] Auto-accepted friend request from ${req.requester_id || req.from_id}`);
                 } catch (e) {
                   console.warn(`[AICQ Channel] Auto-accept failed:`, e.message);
                 }
@@ -400,6 +408,28 @@ _plugin.gateway = {
       if (reply && routing) {
         console.log("[AICQ Channel] channelRuntime available — AI dispatch enabled");
 
+        // Set up the auto-accept callback for friend_request WS events.
+        // When the server pushes a friend_request, the ChatManager calls
+        // this callback so we can immediately accept it (if autoAcceptFriends
+        // is enabled) without waiting for the next startAccount cycle.
+        if (runtime.chat && typeof runtime.chat.setOnAutoAccept === "function") {
+          runtime.chat.setOnAutoAccept(async (req) => {
+            const autoAccept =
+              account?.autoAcceptFriends ??
+              cfg?.channels?.["aicq-chat"]?.autoAcceptFriends ??
+              true;
+            if (!autoAccept) return;
+            try {
+              await runtime.handleGateway("aicq.friends.acceptRequest", {
+                request_id: req.request_id,
+              });
+              console.log(`[AICQ Channel] Auto-accepted friend request (realtime) from ${req.from_id}`);
+            } catch (e) {
+              console.warn(`[AICQ Channel] Realtime auto-accept failed:`, e.message);
+            }
+          });
+        }
+
         // Set up the onNewMessage callback for the ChatManager
         // This handles both regular text messages and synthetic file notifications
         if (runtime.chat) {
@@ -407,6 +437,9 @@ _plugin.gateway = {
             try {
               // Skip stream and presence events — not user messages
               if (msg.type === 'stream_chunk' || msg.type === 'stream_end') return;
+              // Skip outbound messages (agent's own replies) to avoid
+              // echo loop — only inbound user messages should be dispatched.
+              if (msg._outbound) return;
 
               const resolvedAgentId = agentId;
               const fromId = msg.from_id || msg.from || msg.sender_id;
@@ -425,6 +458,7 @@ _plugin.gateway = {
                 accountId,
                 fromId,
                 chatType: isGroup ? "group" : "dm",
+                cfg,
               });
 
               if (routeResult?.agentId) {
@@ -433,7 +467,9 @@ _plugin.gateway = {
                     channelId: "aicq-chat",
                     accountId,
                     fromId,
-                    text: textContent,
+                    Body: textContent,
+                    CommandBody: textContent,
+                    RawBody: textContent,
                     chatType: isGroup ? "group" : "dm",
                   },
                   cfg,
@@ -452,7 +488,7 @@ _plugin.gateway = {
                 });
               }
             } catch (e) {
-              console.error("[AICQ Channel] Inbound message handling error:", e.message);
+              console.error("[AICQ Channel] Inbound message handling error:", e.message, e.stack);
             }
           });
         }
