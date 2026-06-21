@@ -10,6 +10,11 @@ chat network. Supports:
 - Friend request auto-accept
 - Unread message polling on reconnect
 
+Inbound AICQ messages are normalized into ``MessageEvent`` instances
+(with a ``SessionSource`` built via ``self.build_source(...)``) and
+dispatched through ``self.handle_message(...)`` — the same path used
+by built-in platforms like ntfy/Telegram/Discord.
+
 NOTE: E2EE encryption keys are generated but client-side message
 encryption is NOT YET IMPLEMENTED. See identity.py for details.
 """
@@ -17,7 +22,16 @@ encryption is NOT YET IMPLEMENTED. See identity.py for details.
 import asyncio
 import logging
 import os
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+)
 
 from .identity import IdentityManager
 from .server_client import AicqServerClient
@@ -26,48 +40,62 @@ from .chat import ChatManager
 logger = logging.getLogger("aicq-hermes")
 
 
-class AicqPlatformAdapter:
+def _env_dict(config) -> dict:
+    """Best-effort extraction of env-style settings from a config object.
+
+    Hermes' ``PlatformConfig`` doesn't carry an ``env`` dict — env vars
+    are loaded into ``os.environ`` by the gateway before the adapter is
+    constructed — but we still check for ``env``/``__dict__`` for tests
+    and standalone use.
+    """
+    if isinstance(config, dict):
+        return dict(config)
+    env = getattr(config, "env", None)
+    if isinstance(env, dict):
+        return dict(env)
+    if hasattr(config, "__dict__"):
+        return {k: v for k, v in vars(config).items() if not k.startswith("_")}
+    return {}
+
+
+class AicqPlatformAdapter(BasePlatformAdapter):
     """
     AICQ platform adapter for Hermes agent.
 
-    Usage in Hermes plugin register():
-        ctx.register_platform(
-            name="aicq",
-            label="AICQ Encrypted Chat",
-            adapter_factory=lambda cfg: AicqPlatformAdapter(cfg),
-            ...
-        )
+    Inherits from BasePlatformAdapter so the Hermes gateway can drive
+    connection lifecycle, message dispatch, and session bookkeeping
+    through the standard adapter contract.
     """
 
     def __init__(self, config):
-        # Hermes gateway passes a PlatformConfig object (not dict).
-        # Normalize so .get() / env-var fallback work regardless of type.
-        if isinstance(config, dict):
-            self.config = config
-        elif hasattr(config, 'env') and isinstance(config.env, dict):
-            self.config = dict(config.env)
-        elif hasattr(config, '__dict__'):
-            self.config = {k: v for k, v in vars(config).items() if not k.startswith('_')}
-        else:
-            self.config = {}
+        # Accept either a real PlatformConfig (the normal gateway path)
+        # or a dict / namespace (used by tests and standalone scripts).
+        if not isinstance(config, PlatformConfig):
+            extra = getattr(config, "extra", None) or {}
+            config = PlatformConfig(enabled=True, extra=extra)
+        env = _env_dict(config)
+        super().__init__(config=config, platform=Platform("aicq"))
 
+        # Env vars are loaded into os.environ by the gateway before the
+        # adapter is constructed. We also accept them via the config
+        # object's ``env`` dict (test/standalone path) for flexibility.
         self.server_url = (
-            self.config.get("AICQ_SERVER_URL")
+            env.get("AICQ_SERVER_URL")
             or os.environ.get("AICQ_SERVER_URL", "https://aicq.me")
         )
         self.master_number = (
-            self.config.get("AICQ_MASTER_NUMBER")
+            env.get("AICQ_MASTER_NUMBER")
             or os.environ.get("AICQ_MASTER_NUMBER", "")
         )
         self.data_dir = (
-            self.config.get("AICQ_DATA_DIR")
+            env.get("AICQ_DATA_DIR")
             or os.environ.get("AICQ_DATA_DIR", os.path.expanduser("~/.aicq-hermes"))
         )
         self.auto_accept = (
-            self.config.get("AICQ_AUTO_ACCEPT_FRIENDS")
+            env.get("AICQ_AUTO_ACCEPT_FRIENDS")
             or os.environ.get("AICQ_AUTO_ACCEPT_FRIENDS", "true")
         ).lower() == "true"
-        self.agent_id = self.config.get("agent_id", "default")
+        self.agent_id = env.get("agent_id", "default")
 
         os.makedirs(self.data_dir, exist_ok=True)
 
@@ -77,14 +105,7 @@ class AicqPlatformAdapter:
         self.chat = ChatManager(self.server, self.data_dir)
 
         # State
-        self._connected = False
         self._master_bound = False
-        self._running = False
-        self._message_handler = None  # Hermes handle_message callback
-        self._fatal_error_handler = None  # Hermes fatal error callback
-        self._session_store = None  # Hermes session store
-        self._busy_session_handler = None  # Hermes busy session handler
-        self._topic_recovery_fn = None  # Hermes topic recovery fn
 
     # ── Hermes Platform Adapter Interface ───────────────────────────────
 
@@ -119,8 +140,7 @@ class AicqPlatformAdapter:
             # 7. Fetch initial unread
             await self._fetch_initial_unread()
 
-            self._connected = True
-            self._running = True
+            self._mark_connected()
             logger.info("AICQ connected successfully")
             return True
 
@@ -130,30 +150,35 @@ class AicqPlatformAdapter:
 
     async def disconnect(self) -> None:
         """Disconnect from AICQ server."""
-        self._running = False
         await self.chat.stop_polling()
         await self.server.close()
-        self._connected = False
         logger.info("AICQ disconnected")
 
-    async def send(self, chat_id: str, content: str, reply_to=None, metadata=None):
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
         """Send a message to a chat (friend or group).
 
-        This is the primary send method called by Hermes gateway.
+        Returns a ``SendResult`` so the Hermes gateway can retry on
+        transient failures.
         """
-        if not self._connected:
+        if not self.is_connected:
             logger.warning("Not connected, cannot send message")
-            return None
+            return SendResult(success=False, error="not connected", retryable=True)
 
-        is_group = metadata.get("is_group", False) if metadata else False
-        msg_type = metadata.get("msg_type", "text") if metadata else "text"
+        metadata = metadata or {}
+        is_group = metadata.get("is_group", False)
+        msg_type = metadata.get("msg_type", "text")
 
         # Handle file/image sending
-        file_path = metadata.get("file_path") if metadata else None
+        file_path = metadata.get("file_path")
         if file_path and os.path.exists(file_path):
             success = await self.chat.send_file(chat_id, file_path)
-            if success:
-                return {"status": "sent", "type": "file"}
+            return SendResult(success=success, error=None if success else "file send failed")
 
         # Text message
         success = await self.chat.send_message(
@@ -162,21 +187,22 @@ class AicqPlatformAdapter:
             msg_type=msg_type,
             is_group=is_group,
         )
-
         if success:
-            return {"status": "sent", "type": msg_type}
-        return None
+            return SendResult(success=True)
+        return SendResult(success=False, error="send failed", retryable=True)
 
-    async def send_typing(self, chat_id: str = None):
+    async def send_typing(self, chat_id: str = None, metadata=None):
         """Send typing indicator (optional, not natively supported by AICQ)."""
         pass
 
-    def get_chat_info(self) -> dict:
-        """Return platform metadata for Hermes."""
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        """Return platform metadata for the given chat (required by gateway)."""
         return {
+            "name": chat_id,
+            "type": "dm",
             "platform": "aicq",
             "server_url": self.server_url,
-            "connected": self._connected,
+            "connected": self.is_connected,
             "agent_id": self.agent_id,
             "master_bound": self._master_bound,
         }
@@ -187,6 +213,11 @@ class AicqPlatformAdapter:
         """Add the master/owner AICQ user as a friend automatically."""
         try:
             result = await self.server.add_friend_by_number(self.master_number)
+            if result is None:
+                # Already friends or already pending — treat as bound.
+                self._master_bound = True
+                logger.info(f"Master bind: {self.master_number} (no-op / already bound)")
+                return
             status = result.get("status", "")
             if status == "accepted" or result.get("to_id"):
                 self._master_bound = True
@@ -203,6 +234,7 @@ class AicqPlatformAdapter:
         """Auto-accept pending friend requests."""
         try:
             requests = await self.server.list_friend_requests()
+            requests = requests or []
             for req in requests:
                 req_id = req.get("id") or req.get("request_id") or req.get("session_id")
                 if req_id:
@@ -218,6 +250,10 @@ class AicqPlatformAdapter:
         """Sync friends from server into local state."""
         try:
             friends = await self.server.list_friends()
+            # Defensive: server may return null for empty friend list (Go
+            # nil-slice → JSON null). list_friends() already normalizes to
+            # [] but we double-guard here.
+            friends = friends or []
             logger.info(f"Synced {len(friends)} friends from server")
         except Exception as e:
             logger.warning(f"Friends sync failed: {e}")
@@ -225,92 +261,82 @@ class AicqPlatformAdapter:
     # ── Message Dispatch ────────────────────────────────────────────────
 
     async def _on_inbound_message(self, msg: dict):
-        """Handle inbound AICQ message and forward to Hermes gateway."""
+        """Handle inbound AICQ message and forward to Hermes gateway.
+
+        Builds a proper ``MessageEvent`` with a ``SessionSource`` and
+        hands it to ``self.handle_message(...)``, which is the gateway's
+        standard inbound entry point (handles slash commands, busy
+        sessions, post-delivery callbacks, etc.).
+        """
         from_id = msg.get("from_id")
         content = msg.get("content", "")
         is_group = msg.get("is_group", False)
+        msg_type = msg.get("type", "text")
 
         # Skip self messages
         if from_id == self.server.server_account_id:
             return
 
         # Skip empty
-        if not content or not content.strip():
+        if not content or not str(content).strip():
             return
 
         logger.info(f"Inbound message from {from_id}: {str(content)[:80]}")
 
-        # Forward to Hermes via the registered message handler
-        if self._message_handler:
-            try:
-                event = AicqMessageEvent(
-                    chat_id=from_id if not is_group else msg.get("to_id"),
-                    content=content,
-                    sender_id=from_id,
-                    is_group=is_group,
-                    msg_type=msg.get("type", "text"),
-                    raw=msg,
-                )
-                await self._message_handler(event)
-            except Exception as e:
-                logger.error(f"Message handler error: {e}")
+        chat_id = str(msg.get("to_id") if is_group else from_id)
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=str(from_id),
+            chat_type="group" if is_group else "dm",
+            user_id=str(from_id) if from_id else None,
+            user_name=str(from_id) if from_id else None,
+            message_id=str(msg.get("id")) if msg.get("id") else None,
+        )
 
-    def set_message_handler(self, handler):
-        """Set the Hermes message handler (called by gateway to receive messages)."""
-        self._message_handler = handler
+        # Map AICQ message types to MessageType enum.
+        type_map = {
+            "text": MessageType.TEXT,
+            "image": MessageType.PHOTO,
+            "photo": MessageType.PHOTO,
+            "video": MessageType.VIDEO,
+            "audio": MessageType.AUDIO,
+            "voice": MessageType.VOICE,
+            "file": MessageType.DOCUMENT,
+            "document": MessageType.DOCUMENT,
+            "sticker": MessageType.STICKER,
+        }
+        hermes_msg_type = type_map.get(msg_type, MessageType.TEXT)
 
-    def set_fatal_error_handler(self, handler):
-        """Set the Hermes fatal error handler (required by gateway)."""
-        self._fatal_error_handler = handler
+        try:
+            ts = msg.get("timestamp")
+            if isinstance(ts, (int, float)):
+                timestamp = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+            else:
+                timestamp = datetime.now(tz=timezone.utc)
+        except (ValueError, OSError, TypeError):
+            timestamp = datetime.now(tz=timezone.utc)
 
-    def set_session_store(self, store):
-        """Set the Hermes session store (required by gateway).
-        
-        The session store allows the adapter to persist and restore
-        conversation state across gateway restarts.
-        """
-        self._session_store = store
+        event = MessageEvent(
+            text=str(content),
+            message_type=hermes_msg_type,
+            source=source,
+            message_id=str(msg.get("id")) if msg.get("id") else None,
+            raw_message=msg,
+            timestamp=timestamp,
+        )
 
-    def set_busy_session_handler(self, handler):
-        """Set handler for when a session is busy (required by gateway).
-        
-        Called when a message arrives for a chat that already has
-        an active agent session running.
-        """
-        self._busy_session_handler = handler
+        try:
+            await self.handle_message(event)
+        except Exception as e:
+            logger.error(f"Message handler error: {e}", exc_info=True)
 
-    def set_topic_recovery_fn(self, fn):
-        """Set topic recovery function (required by gateway).
-        
-        Used by platforms like Telegram that support topics/threads.
-        AICQ does not use topics, so this is a no-op.
-        """
-        self._topic_recovery_fn = fn
-
-    @property
-    def is_connected(self):
-        """Whether the adapter is currently connected (required by gateway)."""
-        return self._connected
-
-    @property
-    def platform(self):
-        """Platform identifier (required by gateway for logging/state)."""
-        from enum import Enum
-        if not hasattr(self, '_platform_enum'):
-            class PlatformEnum(Enum):
-                aicq = "aicq"
-            self._platform_enum = PlatformEnum.aicq
-        return self._platform_enum
-
-    # Fatal error properties (required by gateway for error handling)
-    fatal_error_code = None
-    fatal_error_message = None
-    fatal_error_retryable = False
+    # ── Initial unread fetch ────────────────────────────────────────────
 
     async def _fetch_initial_unread(self):
         """Fetch unread messages from all friends on startup."""
         try:
             friends = await self.server.list_friends()
+            friends = friends or []
             for f in friends:
                 fid = f.get("id") or f.get("friend_id")
                 if fid:
@@ -324,7 +350,7 @@ class AicqPlatformAdapter:
     async def aicq_status(self) -> dict:
         """Get AICQ plugin status."""
         return {
-            "connected": self._connected,
+            "connected": self.is_connected,
             "server_url": self.server_url,
             "agent_id": self.agent_id,
             "server_account_id": self.server.server_account_id,
@@ -356,29 +382,3 @@ class AicqPlatformAdapter:
     async def aicq_accept_friend_request(self, request_id: str) -> dict:
         """Accept a friend request."""
         return await self.server.accept_friend_request(request_id)
-
-
-class AicqMessageEvent:
-    """Normalized message event for Hermes gateway."""
-
-    def __init__(self, chat_id: str, content: str, sender_id: str,
-                 is_group: bool = False, msg_type: str = "text", raw: dict = None):
-        self.chat_id = chat_id
-        self.content = content
-        self.sender_id = sender_id
-        self.is_group = is_group
-        self.msg_type = msg_type
-        self.raw = raw or {}
-
-    @property
-    def text(self) -> str:
-        return self.content
-
-    def to_dict(self) -> dict:
-        return {
-            "chat_id": self.chat_id,
-            "content": self.content,
-            "sender_id": self.sender_id,
-            "is_group": self.is_group,
-            "msg_type": self.msg_type,
-        }

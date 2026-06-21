@@ -141,6 +141,9 @@ class ChatManager:
         logger.info("WS reconnected — fetching unread messages")
         try:
             friends = await self.server.list_friends()
+            # Defensive: list_friends() already coerces null → [], but
+            # double-guard in case the SDK ever returns None.
+            friends = friends or []
             for f in friends:
                 fid = f.get("id") or f.get("friend_id")
                 if fid:
@@ -152,7 +155,11 @@ class ChatManager:
         """Fetch unread messages from a friend via REST API."""
         try:
             result = await self.server.get_conversation(friend_id, limit=20)
-            messages = result.get("messages", [])
+            # Defensive: server may return {"messages": null} when the
+            # conversation is empty (Go nil slice → JSON null).
+            messages = result.get("messages")
+            if not isinstance(messages, list):
+                messages = []
             for msg in messages:
                 msg_from = msg.get("from_id") or msg.get("fromId")
                 if msg_from == self.server.server_account_id:
@@ -189,16 +196,26 @@ class ChatManager:
                            is_group: bool = False, **kwargs) -> bool:
         """Send a message to a friend or group.
 
-        Strategy: WS-first, REST fallback only on WS failure.
+        Strategy: WS-first (``type: "message"`` for DM, ``type: "group_message"``
+        for group), REST fallback only on WS failure.
+
+        NOTE: The server's ``handleMessage`` WS handler reads the recipient from
+        the ``to`` field (NOT ``targetId``) and persists the message to the
+        ``direct_messages`` table. The older ``handleRelay`` handler only
+        forwards in-memory and does NOT persist — so we use ``type: "message"``
+        for DMs to make sure replies are stored server-side and visible in
+        conversation history / aicq.me admin backend.
         """
         payload = {"type": msg_type, "content": content, **kwargs}
 
-        # Primary: WS relay
-        sent = await self.server.send_ws({
-            "type": "group_message" if is_group else "relay",
-            "targetId": target_id,
-            "payload": payload,
-        })
+        # Primary: WS — use "message" for DM (server persists + relays),
+        # "group_message" for group (server relays to all members).
+        ws_msg = {
+            "type": "group_message" if is_group else "message",
+            "to": target_id,
+            "data": payload,
+        }
+        sent = await self.server.send_ws(ws_msg)
 
         if sent:
             logger.info(f"Message sent via WS to {target_id}: {str(content)[:60]}...")
@@ -238,6 +255,7 @@ class ChatManager:
                     continue
                 try:
                     friends = await self.server.list_friends()
+                    friends = friends or []
                     for f in friends:
                         fid = f.get("id") or f.get("friend_id")
                         if fid:

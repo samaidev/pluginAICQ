@@ -345,7 +345,7 @@ class ChatManager {
     let originalFileName = null;
 
     if (isFileMessage) {
-      const fileResult = this._saveIncomingFileToUserfiles(agentId, fromId, content, data);
+      const fileResult = await this._saveIncomingFileToUserfiles(agentId, fromId, content, data);
       if (fileResult) {
         localFilePath = fileResult.localPath;
         originalFileName = fileResult.originalName;
@@ -401,7 +401,7 @@ class ChatManager {
     }
   }
 
-  _handleGroupIncoming(data) {
+  async _handleGroupIncoming(data) {
     const agentId = this.server.currentAgentId;
     if (!agentId) return;
 
@@ -422,7 +422,7 @@ class ChatManager {
     let originalFileName = null;
 
     if (isFileMessage) {
-      const fileResult = this._saveIncomingFileToUserfiles(agentId, fromId, content, data);
+      const fileResult = await this._saveIncomingFileToUserfiles(agentId, fromId, content, data);
       if (fileResult) {
         localFilePath = fileResult.localPath;
         originalFileName = fileResult.originalName;
@@ -593,7 +593,7 @@ class ChatManager {
     this.db.updateFriendOnline(agentId, friendId, isOnline);
   }
 
-  _handleFileMessage(data) {
+  async _handleFileMessage(data) {
     // Handle explicit file/image type WS messages
     const agentId = this.server.currentAgentId;
     if (!agentId) return;
@@ -606,15 +606,15 @@ class ChatManager {
     let originalFileName = null;
 
     // If the file data is inline (base64), save it
-    if (data.file_data || data.data && this._isBase64Data(data.data)) {
-      const fileResult = this._saveBase64FileToUserfiles(agentId, fromId, data);
+    if (data.file_data || data.fileData || data.media_data || data.mediaData || (data.data && this._isBase64Data(data.data))) {
+      const fileResult = await this._saveBase64FileToUserfiles(agentId, fromId, data);
       if (fileResult) {
         localFilePath = fileResult.localPath;
         originalFileName = fileResult.originalName;
       }
-    } else if (data.file_url || data.fileUrl) {
+    } else if (data.file_url || data.fileUrl || data.media_url || data.mediaUrl) {
       // Download file from URL and save locally
-      const fileResult = this._saveUrlFileToUserfiles(agentId, fromId, data);
+      const fileResult = await this._saveUrlFileToUserfiles(agentId, fromId, data);
       if (fileResult) {
         localFilePath = fileResult.localPath;
         originalFileName = fileResult.originalName;
@@ -914,6 +914,9 @@ class ChatManager {
     // Check explicit message type
     if (['file', 'image', 'file_chunk'].includes(msgType)) return true;
     if (['file', 'image'].includes(data.type)) return true;
+    // Also check data.data (server wraps payload in data.data)
+    const inner = data.data || {};
+    if (['file', 'image'].includes(inner.type)) return true;
 
     // Check for file metadata in content
     if (typeof content === 'string') {
@@ -927,8 +930,12 @@ class ChatManager {
       }
     }
 
-    // Check for file_url or file data
+    // Check for file_url, media_url, or file data
+    // aicq.me web UI uses media_url / media_data for file/image messages
     if (data.file_url || data.fileUrl || data.file_data || data.fileData) return true;
+    if (data.media_url || data.mediaUrl || data.media_data || data.mediaData) return true;
+    if (inner.file_url || inner.fileUrl || inner.media_url || inner.mediaUrl) return true;
+    if (inner.file_data || inner.fileData || inner.media_data || inner.mediaData) return true;
 
     // Check for known file markers in text content
     if (typeof content === 'string' && (
@@ -963,10 +970,13 @@ class ChatManager {
    * Save an incoming file to the userfiles directory.
    * Handles various formats: inline base64, URL references, file-info JSON.
    */
-  _saveIncomingFileToUserfiles(agentId, fromId, content, data) {
+  async _saveIncomingFileToUserfiles(agentId, fromId, content, data) {
     try {
       const fileId = crypto.randomUUID();
       const timestamp = Date.now();
+
+      // Also check inner data (server wraps payload in data.data)
+      const inner = data.data || {};
 
       // Try to extract file info from the message
       let parsed = null;
@@ -976,7 +986,6 @@ class ChatManager {
 
       // Case 1: file-info with chunked data (already assembled elsewhere)
       if (parsed && parsed.localPath) {
-        // File is already on disk, just reference it
         return {
           localPath: parsed.localPath,
           originalName: parsed.fileName || path.basename(parsed.localPath),
@@ -984,20 +993,34 @@ class ChatManager {
       }
 
       // Case 2: Base64 data inline
-      if (data.file_data || data.fileData || (parsed && parsed.data && this._isBase64Data(parsed.data))) {
-        return this._saveBase64FileToUserfiles(agentId, fromId, {
+      // Check both legacy (file_data/fileData) and aicq.me (media_data/mediaData) field names
+      const base64Data = data.file_data || data.fileData || data.media_data || data.mediaData
+        || inner.file_data || inner.fileData || inner.media_data || inner.mediaData
+        || (parsed && parsed.data);
+      if (base64Data) {
+        const fileName = data.file_name || data.fileName || inner.file_name || inner.fileName
+          || (parsed && parsed.fileName) || (inner.file_info && inner.file_info.filename)
+          || (data.file_info && data.file_info.filename) || 'file.bin';
+        return await this._saveBase64FileToUserfiles(agentId, fromId, {
           ...data,
-          file_data: data.file_data || data.fileData || (parsed && parsed.data),
-          file_name: data.file_name || data.fileName || (parsed && parsed.fileName) || 'file.bin',
+          file_data: base64Data,
+          file_name: fileName,
         });
       }
 
       // Case 3: URL reference — download and save
-      if (data.file_url || data.fileUrl || (parsed && parsed.fileUrl)) {
-        return this._saveUrlFileToUserfiles(agentId, fromId, {
+      // Check both legacy (file_url/fileUrl) and aicq.me (media_url/mediaUrl) field names
+      const fileUrl = data.file_url || data.fileUrl || data.media_url || data.mediaUrl
+        || inner.file_url || inner.fileUrl || inner.media_url || inner.mediaUrl
+        || (parsed && parsed.fileUrl);
+      if (fileUrl) {
+        const fileName = data.file_name || data.fileName || inner.file_name || inner.fileName
+          || (parsed && parsed.fileName) || (inner.file_info && inner.file_info.filename)
+          || (data.file_info && data.file_info.filename) || 'file.bin';
+        return await this._saveUrlFileToUserfiles(agentId, fromId, {
           ...data,
-          file_url: data.file_url || data.fileUrl || (parsed && parsed.fileUrl),
-          file_name: data.file_name || data.fileName || (parsed && parsed.fileName) || 'file.bin',
+          file_url: fileUrl,
+          file_name: fileName,
         });
       }
 
@@ -1038,7 +1061,7 @@ class ChatManager {
   /**
    * Save a base64-encoded file to userfiles.
    */
-  _saveBase64FileToUserfiles(agentId, fromId, data) {
+  async _saveBase64FileToUserfiles(agentId, fromId, data) {
     try {
       const fileId = crypto.randomUUID();
       const timestamp = Date.now();
@@ -1068,14 +1091,41 @@ class ChatManager {
   /**
    * Download a file from URL and save to userfiles.
    */
-  _saveUrlFileToUserfiles(agentId, fromId, data) {
+  async _saveUrlFileToUserfiles(agentId, fromId, data) {
     try {
       const fileId = crypto.randomUUID();
       const timestamp = Date.now();
       const fileUrl = data.file_url || data.fileUrl;
       const originalName = data.file_name || data.fileName || path.basename(fileUrl || 'file.bin');
 
-      // For local server URLs, resolve the local path directly
+      // For aicq.me server URLs (/api/v1/chat/files/:id), download the file
+      // using the AI agent's JWT token
+      if (fileUrl && (fileUrl.startsWith('/api/v1/chat/files/') || fileUrl.includes('/api/v1/chat/files/'))) {
+        const downloadUrl = this.server.serverUrl + fileUrl;
+        const token = this.server.jwtToken;
+        const fetch = require('node-fetch');
+        try {
+          const resp = await fetch(downloadUrl, {
+            headers: { 'Authorization': `Bearer ${token}` },
+          });
+          if (resp.ok) {
+            const buffer = await resp.buffer();
+            const contentType = resp.headers.get('content-type') || '';
+            const ext = path.extname(originalName) || this._inferExtFromMime(contentType) || '.bin';
+            const safeName = `${timestamp}_${fileId.substring(0, 8)}${ext}`;
+            const localPath = path.join(this.userfilesDir, safeName);
+            fs.writeFileSync(localPath, buffer);
+            console.log(`[Chat] Downloaded aicq.me file: ${fileUrl} -> ${localPath} (${buffer.length} bytes)`);
+            return { localPath, originalName };
+          } else {
+            console.warn(`[Chat] aicq.me file download failed: HTTP ${resp.status}`);
+          }
+        } catch (e) {
+          console.warn('[Chat] Failed to download aicq.me file:', e.message);
+        }
+      }
+
+      // For local server URLs (/api/files/), resolve the local path directly
       if (fileUrl && fileUrl.startsWith('/api/files/')) {
         const fileName = path.basename(fileUrl);
         const uploadsPath = path.join(this.uploadsDir, fileName);
@@ -1089,13 +1139,11 @@ class ChatManager {
         }
       }
 
-      // For remote URLs, we'd need async download — log and skip for now
+      // For other remote URLs, save a placeholder with the URL reference
       console.log(`[Chat] Remote file URL (async download not yet supported): ${fileUrl}`);
       const ext = path.extname(originalName) || '.bin';
       const safeName = `${timestamp}_${fileId.substring(0, 8)}${ext}`;
       const localPath = path.join(this.userfilesDir, safeName);
-
-      // Save a placeholder with the URL reference
       fs.writeFileSync(localPath, JSON.stringify({
         type: 'url_reference',
         url: fileUrl,
@@ -1107,6 +1155,21 @@ class ChatManager {
       console.error('[Chat] Failed to save URL file:', e.message);
       return null;
     }
+  }
+
+  /**
+   * Helper: synchronous-style fetch for downloading files.
+   * Since _saveUrlFileToUserfiles is called from sync context, we use
+   * a child_process execSync to download the file.
+   */
+  _inferExtFromMime(mime) {
+    const map = {
+      'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
+      'image/webp': '.webp', 'image/svg+xml': '.svg',
+      'application/pdf': '.pdf', 'text/plain': '.txt',
+      'application/zip': '.zip', 'application/octet-stream': '.bin',
+    };
+    return map[mime] || '.bin';
   }
 
   /**

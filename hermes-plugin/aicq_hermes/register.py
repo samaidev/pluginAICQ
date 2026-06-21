@@ -85,6 +85,7 @@ def register(ctx):
             },
         },
         handler=_tool_status,
+        is_async=True,
     )
 
     ctx.register_tool(
@@ -99,6 +100,7 @@ def register(ctx):
             },
         },
         handler=_tool_friends_list,
+        is_async=True,
     )
 
     ctx.register_tool(
@@ -122,6 +124,7 @@ def register(ctx):
             },
         },
         handler=_tool_friends_add,
+        is_async=True,
     )
 
     ctx.register_tool(
@@ -155,6 +158,7 @@ def register(ctx):
             },
         },
         handler=_tool_chat_send,
+        is_async=True,
     )
 
     ctx.register_tool(
@@ -183,6 +187,7 @@ def register(ctx):
             },
         },
         handler=_tool_chat_history,
+        is_async=True,
     )
 
     ctx.register_tool(
@@ -210,6 +215,7 @@ def register(ctx):
             },
         },
         handler=_tool_chat_send_file,
+        is_async=True,
     )
 
     # SPEC 合规: 探活 aicqSDK 适配层 (Step 1)

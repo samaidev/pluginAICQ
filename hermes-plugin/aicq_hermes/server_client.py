@@ -17,6 +17,19 @@ from nacl.signing import SigningKey
 logger = logging.getLogger("aicq-hermes")
 
 
+def _safe_json(data) -> dict:
+    """Normalize a parsed JSON value into a dict.
+
+    The AICQ server (Go + Gin) serializes nil slices as JSON ``null``,
+    so ``{"friends": null}`` is a valid response when the user has no
+    friends. Without this guard, ``data.get(...)`` would raise
+    ``AttributeError: 'NoneType' object has no attribute 'get'``.
+    """
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
 class AicqServerClient:
     """REST + WebSocket client for the AICQ server."""
 
@@ -97,7 +110,17 @@ class AicqServerClient:
                 raise RuntimeError(f"Login failed: {data}")
 
         self.jwt_token = data.get("access_token") or data.get("token")
-        self.server_account_id = data.get("account_id") or data.get("server_account_id")
+        # Account ID can be at top level (account_id / server_account_id) or
+        # nested inside an ``account`` dict (the format the current
+        # loginAgentHandler actually returns: ``{"access_token": ...,
+        # "account": {"id": "ai_xxx", ...}}``). Older plugin versions only
+        # looked at the top level, leaving server_account_id=None — which
+        # then broke self-message detection, WS nodeId, and any logic that
+        # needs to know "who am I on the server".
+        if not self.server_account_id:
+            account = data.get("account") or {}
+            if isinstance(account, dict):
+                self.server_account_id = account.get("id") or account.get("account_id")
         logger.info(f"Agent logged in: {agent_id}, account={self.server_account_id}")
         return data
 
@@ -118,7 +141,12 @@ class AicqServerClient:
         return {"Authorization": f"Bearer {self.jwt_token}"}
 
     async def _request_with_refresh(self, method: str, url: str, **kwargs) -> dict:
-        """Make an authenticated request, auto-refreshing JWT on 401. Returns parsed JSON."""
+        """Make an authenticated request, auto-refreshing JWT on 401. Returns parsed JSON.
+
+        Always returns a dict; if the server returns a non-JSON body or a
+        JSON ``null``, an empty dict is returned so callers can safely use
+        ``data.get(...)`` without NoneType crashes.
+        """
         session = await self._get_session()
         headers = kwargs.pop("headers", {})
         headers.update(self._auth_headers())
@@ -130,19 +158,23 @@ class AicqServerClient:
                     await self.login_agent(self._current_agent_id)
                 except Exception as e:
                     logger.error(f"JWT refresh failed: {e}")
-                    return await resp.json()  # Return whatever the 401 response contains
+                    return _safe_json(await resp.json())  # Return whatever the 401 response contains
 
                 # Retry with new token
                 headers.update(self._auth_headers())
                 async with session.request(method, url, headers=headers, **kwargs) as retry_resp:
-                    return await retry_resp.json()
-            return await resp.json()
+                    return _safe_json(await retry_resp.json())
+            return _safe_json(await resp.json())
 
     # ── Friends ─────────────────────────────────────────────────────────
 
     async def list_friends(self) -> list:
         data = await self._request_with_refresh("GET", f"{self.api_base}/friends")
-        return data.get("friends", [])
+        # Server returns {"friends": null} when the user has no friends
+        # (Go nil slice → JSON null). Coerce to [] so callers can iterate
+        # and len() without NoneType crashes.
+        friends = data.get("friends")
+        return friends if isinstance(friends, list) else []
 
     async def send_friend_request(self, to_id: str) -> dict:
         return await self._request_with_refresh(
@@ -150,25 +182,71 @@ class AicqServerClient:
         )
 
     async def list_friend_requests(self) -> list:
+        """List friend requests received by this account (i.e. the ones we can accept).
+
+        The AICQ server returns ``{"received": [...], "sent": [...]}`` —
+        older plugin versions looked for ``requests`` / ``pending`` keys
+        that don't exist on the wire, so auto-accept silently no-op'd.
+        We now read ``received`` (the inbound requests) and fall back to
+        the legacy keys for forward-compat with future server versions.
+        """
         data = await self._request_with_refresh("GET", f"{self.api_base}/friends/requests")
-        return data.get("requests", data.get("pending", []))
+        # Prefer "received" (current server schema). Fall back to legacy
+        # keys for compatibility with hypothetical older servers.
+        reqs = data.get("received")
+        if not isinstance(reqs, list):
+            reqs = data.get("requests")
+        if not isinstance(reqs, list):
+            reqs = data.get("pending")
+        return reqs if isinstance(reqs, list) else []
 
     async def accept_friend_request(self, request_id: str) -> dict:
         return await self._request_with_refresh(
             "POST", f"{self.api_base}/friends/requests/{request_id}/accept",
         )
 
-    async def add_friend_by_number(self, aicq_number: str) -> dict:
-        """Add a friend by their AICQ number (e.g. '1000000')."""
-        # First resolve the number to an account ID
+    async def add_friend_by_number(self, aicq_number: str) -> Optional[dict]:
+        """Add a friend by their AICQ number (e.g. '1000000').
+
+        Returns the friend-request response dict on success, or None if
+        the number could not be resolved or the request was already
+        pending (so callers can treat None as "already bound").
+        """
+        # First resolve the number to an account ID. The lookup endpoint
+        # returns {"accounts": [...], "account_id": "<uuid>"} when there
+        # is exactly one match, or {"accounts": null} when no match.
         data = await self._request_with_refresh(
             "GET", f"{self.api_base}/accounts/lookup?number={aicq_number}",
         )
         account_id = data.get("account_id") or data.get("id")
         if not account_id:
-            # Fallback: try sending friend request directly with number
-            return await self.send_friend_request(aicq_number)
-        return await self.send_friend_request(account_id)
+            # Try the accounts array as a fallback.
+            accounts = data.get("accounts") or []
+            if accounts and isinstance(accounts, list):
+                first = accounts[0]
+                if isinstance(first, dict):
+                    account_id = first.get("id") or first.get("account_id")
+        if not account_id:
+            # The previous fallback sent the raw human_number (e.g.
+            # "1000008") as ``to_id`` to /friends/request, which the
+            # server rejects with USER_NOT_FOUND. Fail loudly here so
+            # the master-bind path can log a clear error instead of
+            # silently retrying every reconnect.
+            logger.warning(
+                f"Could not resolve AICQ number {aicq_number} to an account_id "
+                f"(lookup response: {data!r}). Friend request not sent."
+            )
+            return None
+        try:
+            return await self.send_friend_request(account_id)
+        except Exception as e:
+            # ALREADY_FRIENDS / ALREADY_SENT come back as HTTP errors —
+            # treat them as "already bound" so we don't spam the log.
+            msg = str(e)
+            if "ALREADY_FRIENDS" in msg or "ALREADY_SENT" in msg:
+                logger.info(f"Already friends/pending with {aicq_number} ({account_id})")
+                return None
+            raise
 
     # ── Chat ────────────────────────────────────────────────────────────
 
