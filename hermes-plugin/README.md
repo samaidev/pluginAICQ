@@ -88,6 +88,33 @@ Hermes Agent
     └── ChatManager         → message dispatch, unread polling, file transfer
 ```
 
+## Chat Session UI (Companion Feature)
+
+The AICQ web client (https://aicq.me) and other UI surfaces that consume the
+`pluginAICQ` family provide two new buttons in the chat header (placed BEFORE
+the existing action buttons):
+
+- **New Chat (+)** — Archives the current session and starts a new one.
+- **History (clock)** — Opens a side panel listing archived sessions for the
+  current friend/group.
+
+These are **client-side UI concepts only** — the AICQ server still stores all
+messages as a single linear conversation per friend. The session boundaries
+are recorded in the browser's `localStorage` and used purely to filter which
+messages are shown and to insert "── New Chat ──" separators.
+
+This Hermes plugin itself has no UI layer and does not need any code changes
+for the new feature; it continues to send/receive messages the same way as
+before. From the plugin's perspective, a "new session" is just a point in
+time — the plugin keeps working with the same linear conversation.
+
+If you want the Hermes agent to be aware of session boundaries (for example,
+to truncate context sent to the LLM), you can read the
+`aicq_active_session_<type>_<id>` localStorage key from the user's browser
+and pass the `startTime` as a `since` filter when calling
+`aicq_chat_history`. This is optional and not required for basic
+operation.
+
 ## License
 
 MIT
