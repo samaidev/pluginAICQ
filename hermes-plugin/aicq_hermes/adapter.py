@@ -379,6 +379,23 @@ class AicqPlatformAdapter(BasePlatformAdapter):
         success = await self.chat.send_file(target_id, file_path)
         return {"success": success}
 
+    async def aicq_chat_stream_chunk(self, target_id: str, chunk_type: str = "text",
+                                     data=None) -> dict:
+        """Send a streaming chunk to a friend.
+
+        Use chunk_type="thinking" to show an LLM status indicator in the
+        recipient's chat UI (e.g. "Calling LLM...", "Iteration 2").
+        Use chunk_type="text" for the actual response text.
+        Must be followed by aicq_chat_stream_end() to finalize the message.
+        """
+        success = await self.chat.send_stream_chunk(target_id, chunk_type, data)
+        return {"success": success}
+
+    async def aicq_chat_stream_end(self, target_id: str, message_id: str = "") -> dict:
+        """Signal the end of a streaming message."""
+        success = await self.chat.send_stream_end(target_id, message_id)
+        return {"success": success}
+
     async def aicq_accept_friend_request(self, request_id: str) -> dict:
         """Accept a friend request."""
         return await self.server.accept_friend_request(request_id)

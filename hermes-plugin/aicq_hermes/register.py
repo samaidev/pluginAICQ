@@ -230,7 +230,74 @@ def register(ctx):
     except ImportError as e:
         logger.warning(f"sdk_adapter module not loadable: {e}")
 
-    logger.info("AICQ Hermes plugin registered (platform + 6 tools)")
+    # [v1.3] Streaming tools — let the agent send LLM status + text chunks
+    ctx.register_tool(
+        name="aicq_chat_stream_chunk",
+        toolset="aicq",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "aicq_chat_stream_chunk",
+                "description": (
+                    "Send a streaming chunk to an AICQ friend. Use chunk_type='thinking' "
+                    "to show an LLM status indicator (e.g. 'Calling LLM...', 'Iteration 2') "
+                    "in the recipient's chat UI. Use chunk_type='text' for the actual "
+                    "response text. Must be followed by aicq_chat_stream_end to finalize."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {
+                            "type": "string",
+                            "description": "The AICQ account ID of the recipient",
+                        },
+                        "chunk_type": {
+                            "type": "string",
+                            "enum": ["text", "reasoning", "thinking", "reasoning_end",
+                                     "clear_text", "tool_call", "tool_result"],
+                            "description": "Type of stream chunk (default: text)",
+                        },
+                        "data": {
+                            "description": "Chunk content. String for text/thinking/reasoning. Object for tool_call/tool_result.",
+                        },
+                    },
+                    "required": ["target_id", "chunk_type"],
+                },
+            },
+        },
+        handler=_tool_chat_stream_chunk,
+        is_async=True,
+    )
+
+    ctx.register_tool(
+        name="aicq_chat_stream_end",
+        toolset="aicq",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "aicq_chat_stream_end",
+                "description": "Signal the end of a streaming message. Must be called after a sequence of aicq_chat_stream_chunk calls.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {
+                            "type": "string",
+                            "description": "The AICQ account ID of the recipient",
+                        },
+                        "message_id": {
+                            "type": "string",
+                            "description": "Optional message ID for dedup",
+                        },
+                    },
+                    "required": ["target_id"],
+                },
+            },
+        },
+        handler=_tool_chat_stream_end,
+        is_async=True,
+    )
+
+    logger.info("AICQ Hermes plugin registered (platform + 8 tools)")
 
 
 # ── Tool Handlers ───────────────────────────────────────────────────────
@@ -315,3 +382,22 @@ async def _tool_chat_send_file(ctx, target_id: str = "", file_path: str = "", **
     if not target_id or not file_path:
         return {"error": "target_id and file_path are required"}
     return await adapter.aicq_chat_send_file(target_id, file_path)
+
+
+async def _tool_chat_stream_chunk(ctx, target_id: str = "", chunk_type: str = "text",
+                                  data=None, **kwargs):
+    adapter = await _get_adapter(ctx)
+    if not adapter:
+        return {"error": "AICQ adapter not running"}
+    if not target_id:
+        return {"error": "target_id is required"}
+    return await adapter.aicq_chat_stream_chunk(target_id, chunk_type, data)
+
+
+async def _tool_chat_stream_end(ctx, target_id: str = "", message_id: str = "", **kwargs):
+    adapter = await _get_adapter(ctx)
+    if not adapter:
+        return {"error": "AICQ adapter not running"}
+    if not target_id:
+        return {"error": "target_id is required"}
+    return await adapter.aicq_chat_stream_end(target_id, message_id)

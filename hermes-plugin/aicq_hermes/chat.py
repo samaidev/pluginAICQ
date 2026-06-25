@@ -244,6 +244,76 @@ class ChatManager:
             logger.error(f"File send failed: {e}")
             return False
 
+    # ── Streaming (LLM status + text chunks) ───────────────────────────
+
+    async def send_stream_chunk(self, target_id: str, chunk_type: str = "text",
+                                data=None) -> bool:
+        """Send a stream chunk to a friend via WebSocket.
+
+        Used for real-time streaming output when the agent is generating a
+        response. The aicq.me frontend renders different chunk types differently:
+
+        - ``text``: visible text content (accumulated into the message bubble)
+        - ``reasoning``: reasoning/thinking process (shown in a collapsible panel)
+        - ``thinking``: transient status hint (shown in the LLM status bar above
+          the input box, e.g. "Calling LLM...", "Iteration 2"). NOT persisted.
+        - ``reasoning_end``: marks the end of a reasoning section
+        - ``clear_text``: clears the current text buffer (between multi-round
+          tool calls)
+        - ``tool_call``: tool invocation, data = ``{"name": ..., "input": ...}``
+        - ``tool_result``: tool result, data = ``{"output": ..., "success": ...}``
+
+        Typical flow for an LLM response with status::
+
+            await chat.send_stream_chunk(target, "thinking", "Calling LLM...")
+            # ... LLM generates text ...
+            await chat.send_stream_chunk(target, "text", "Hello!")
+            await chat.send_stream_chunk(target, "text", " How can I help?")
+            await chat.send_stream_end(target)
+
+        For multi-round agent loops, send a ``thinking`` chunk before each
+        round to keep the user informed::
+
+            await chat.send_stream_chunk(target, "thinking", "Iteration 2")
+            # ... round 2 LLM call + tool calls ...
+            await chat.send_stream_chunk(target, "text", "Based on the results...")
+            await chat.send_stream_end(target)
+        """
+        if data is None:
+            data = ""
+        ws_msg = {
+            "type": "stream_chunk",
+            "to": target_id,
+            "chunkType": chunk_type,
+            "data": data,
+        }
+        sent = await self.server.send_ws(ws_msg)
+        if not sent:
+            logger.warning(f"Stream chunk send failed (WS down) to {target_id}: type={chunk_type}")
+        return sent
+
+    async def send_stream_end(self, target_id: str, message_id: str = "") -> bool:
+        """Signal the end of a stream.
+
+        Must be called after a sequence of ``send_stream_chunk`` calls. The
+        aicq.me frontend uses this to finalize the streaming message into a
+        permanent message and persist it to the database.
+
+        Args:
+            target_id: friend account ID
+            message_id: optional message ID for dedup/association
+        """
+        msg_id = message_id or f"msg_{int(time.time()*1000)}_{os.urandom(3).hex()}"
+        ws_msg = {
+            "type": "stream_end",
+            "to": target_id,
+            "msg_id": msg_id,
+        }
+        sent = await self.server.send_ws(ws_msg)
+        if not sent:
+            logger.warning(f"Stream end send failed to {target_id}")
+        return sent
+
     # ── Periodic Unread Poll ────────────────────────────────────────────
 
     async def start_polling(self):

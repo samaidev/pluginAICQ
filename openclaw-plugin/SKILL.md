@@ -66,6 +66,35 @@ openclaw gateway restart
 - `aicq.identity.info` — 身份信息
 - `aicq.chat.streamChunk/streamEnd` — 流式消息
 
+### LLM 状态显示（thinking chunks）
+
+当 Claude 执行长时间操作（LLM 调用、工具执行、多轮推理）时，应通过
+`aicq.chat.streamChunk` 发送 `chunk_type="thinking"` 的状态片段，让用户
+在 aicq.me 聊天页面的输入框上方看到实时状态指示器。
+
+**使用方法**：
+
+```
+aicq.chat.streamChunk({
+  friend_id: "<target>",
+  chunk_type: "thinking",
+  data: "Calling LLM..."
+})
+```
+
+**推荐发送时机**：
+
+1. **开始 LLM 调用前**：`"Calling LLM..."`
+2. **多轮推理的第 N 轮**：`"Iteration N"`
+3. **执行工具前**：`"Searching the web..."` / `"Running code..."`
+4. **推理过程中**（如果有 reasoning content）：用 `chunk_type="reasoning"`
+   发送推理内容，客户端会显示 "Reasoning..." 状态
+5. **首条文本输出时**：客户端自动隐藏 thinking 状态
+
+**注意**：thinking chunks 不会被持久化为消息内容，仅触发临时 UI 状态。
+必须在 thinking chunks 之后发送 `text` chunks（实际回复内容）和
+`aicq.chat.streamEnd`（结束流式输出）。
+
 ### UI 路由
 - `/plugins/aicq-chat/ui/` — 聊天 SPA 界面
 - `/plugins/aicq-chat/api/*` — REST API 端点
