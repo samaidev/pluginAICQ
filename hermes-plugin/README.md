@@ -115,7 +115,40 @@ and pass the `startTime` as a `since` filter when calling
 `aicq_chat_history`. This is optional and not required for basic
 operation.
 
+
+## Compatibility Notes
+
+### v1.2.4 — OpenAI-compatible LLM gateways with inline `<think>` reasoning
+
+Some OpenAI-compatible LLM gateways (e.g. the aicq.online relay fronting
+MiniMax-M1 / Step-3.7-Flash) inline the model's reasoning inside
+`delta.content` wrapped in a single `<think>` open tag with no
+matching `</think>` close. Hermes-agent's `StreamingThinkScrubber`
+treats an unclosed `<think>` as a truncated reasoning block and
+discards everything held back in its buffer at end-of-stream, so the
+agent ends up with an empty `content` and replies
+"Empty response from model — retrying (1/3)".
+
+This plugin (since v1.2.4) ships an import-time compatibility shim
+that monkey-patches `StreamingThinkScrubber.flush` to recover the
+visible answer in this case: when the stream ends inside an unclosed
+`<think>` block, the shim finds the last newline in the held-back
+buffer and emits whatever came after it as the final response
+(reasoning models typically put the answer on the line after the
+reasoning). If there is no newline, the original "discard everything"
+behaviour is preserved.
+
+The shim is enabled by default. To disable (e.g. for debugging or
+when running against a gateway that emits properly closed tags):
+
+```bash
+export AICQ_HERMES_PATCH_THINK_SCRUBBER=false
+```
+
+The shim is idempotent (safe to apply multiple times) and degrades
+gracefully if `agent.think_scrubber` is not importable (e.g. when
+running plugin unit tests without the full hermes-agent stack).
+
 ## License
 
 MIT
-

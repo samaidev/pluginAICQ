@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aicq-hermes"
-version = "1.2.1"
+version = "1.2.4"
 description = "AICQ platform adapter plugin for Hermes agent — encrypted chat with NaCl, friend management, file transfer, and tool calling (powered by aicqSDK)"
 readme = "README.md"
 license = "MIT"
