@@ -632,14 +632,26 @@ export function registerHttpRoutes(api, ctx) {
   const app = createAicqExpressApp(ctx);
 
   // Register the Express sub-app for all /plugins/aicq-chat requests.
-  // The gateway uses app.use(path, handler), so the mount prefix is
-  // stripped before the request reaches our sub-app.
+  // OpenClaw dispatches plugin HTTP routes by calling handler(req, res)
+  // directly (NOT via Express's app.use(path, subApp) mounting), so we
+  // must specify match:"prefix" to match sub-paths AND strip the mount
+  // prefix from req.url before invoking the sub-app, otherwise the
+  // sub-app's relative routes (e.g. /api/status) would never match.
   if (typeof api.registerHttpRoute === "function") {
+    const MOUNT = "/plugins/aicq-chat";
     api.registerHttpRoute({
-      path: "/plugins/aicq-chat",
+      path: MOUNT,
+      match: "prefix",
       auth: "plugin",
-      handler: app,
+      handler: (req, res) => {
+        const originalUrl = req.url;
+        if (originalUrl.startsWith(MOUNT)) {
+          req.url = originalUrl.slice(MOUNT.length) || "/";
+        }
+        return app(req, res);
+      },
     });
+    console.log(`[AICQ Channel] HTTP routes registered at ${MOUNT}/* (match=prefix, with URL prefix stripping)`);
   } else {
     console.warn(
       "[AICQ Channel] api.registerHttpRoute not available — HTTP UI routes not registered. " +
