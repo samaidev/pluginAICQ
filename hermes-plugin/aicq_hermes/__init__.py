@@ -6,6 +6,7 @@ Supports: login, registration, master binding, text/file/image chat, tool callin
 """
 
 from .adapter import AicqPlatformAdapter
+from .register import register, check_requirements, validate_config
 
 # ─── hermes-agent stream-tag compat shim ─────────────────────────────────────
 # Some OpenAI-compatible LLM gateways (e.g. the aicq.online relay fronting
@@ -71,4 +72,4 @@ def _apply_think_scrubber_compat_patch():
 
 _apply_think_scrubber_compat_patch()
 
-__all__ = ["AicqPlatformAdapter"]
+__all__ = ["AicqPlatformAdapter", "register", "check_requirements", "validate_config"]

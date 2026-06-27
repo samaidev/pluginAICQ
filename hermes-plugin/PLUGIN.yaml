@@ -1,7 +1,7 @@
 name: aicq
 label: AICQ Encrypted Chat
 kind: platform
-version: 1.2.4
+version: 1.2.5
 description: Connect Hermes agent to AICQ end-to-end encrypted chat network — secure agent-to-agent and agent-to-human messaging with NaCl E2EE
 author: ctz168
 requires_env:

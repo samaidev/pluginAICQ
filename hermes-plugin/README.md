@@ -15,7 +15,7 @@ Connect [Hermes Agent](https://github.com/nousresearch/hermes-agent) to the [AIC
 ## Installation
 
 ```bash
-pip install aicq-hermes-plugin
+pip install aicq-hermes
 ```
 
 Or install from source:
@@ -38,16 +38,34 @@ Set environment variables or configure in `~/.hermes/.env`:
 
 ## Hermes Plugin Setup
 
+Since v1.2.5 the package registers a `hermes_agent.plugins` entry point,
+so `pip install` is enough — Hermes auto-discovers the plugin on startup.
+No manual file copy is needed.
+
 1. Install the plugin:
    ```bash
-   pip install aicq-hermes-plugin
+   pip install aicq-hermes
    ```
 
-2. Copy to Hermes plugins directory:
+2. Enable the plugin (writes `aicq` to `plugins.enabled` in `~/.hermes/config.yaml`):
    ```bash
-   cp -r aicq_hermes/ ~/.hermes/plugins/aicq/
-   cp PLUGIN.yaml ~/.hermes/plugins/aicq/
+   hermes plugins enable aicq
    ```
+
+   > **Note**: on Hermes-Agent releases before the entry-point discovery
+   > patch lands upstream, `hermes plugins enable aicq` may report
+   > "Plugin 'aicq' is not installed or bundled" because the CLI's
+   > `_discover_all_plugins()` only scans `~/.hermes/plugins/` and the
+   > bundled directory — it does not yet scan entry points. As a
+   > workaround, add `aicq` to `plugins.enabled` manually:
+   > ```yaml
+   > plugins:
+   >   enabled:
+   >     - aicq
+   > ```
+   > The gateway's actual loader (`PluginManager.discover_and_load`)
+   > already scans entry points, so the plugin will load and connect
+   > correctly on `hermes gateway run`.
 
 3. Configure environment:
    ```bash
@@ -60,6 +78,23 @@ Set environment variables or configure in `~/.hermes/.env`:
    ```bash
    hermes gateway run
    ```
+
+### Pre-v1.2.5 manual install (legacy)
+
+For older releases (v1.2.4 and below) that do not ship the entry point,
+copy the plugin files into the Hermes user plugins directory:
+
+```bash
+pip install aicq-hermes==1.2.4
+# Find where the package was installed:
+AICQ_HERMES_DIR=$(python -c "import aicq_hermes, os; print(os.path.dirname(aicq_hermes.__file__))")
+mkdir -p ~/.hermes/plugins/aicq
+cp -r "$AICQ_HERMES_DIR"/* ~/.hermes/plugins/aicq/aicq_hermes/
+# PLUGIN.yaml ships in the source repo, not in the wheel — download it:
+curl -fsSL https://raw.githubusercontent.com/samaidev/pluginAICQ/main/hermes-plugin/PLUGIN.yaml \
+  -o ~/.hermes/plugins/aicq/plugin.yaml
+hermes plugins enable aicq
+```
 
 ## Registered Tools
 
@@ -117,6 +152,37 @@ operation.
 
 
 ## Compatibility Notes
+
+### v1.2.5 — `hermes_agent.plugins` entry point (auto-discovery)
+
+The package now registers a `hermes_agent.plugins` entry point in
+`pyproject.toml`:
+
+```toml
+[project.entry-points."hermes_agent.plugins"]
+aicq = "aicq_hermes"
+```
+
+Hermes-Agent's `PluginManager._scan_entry_points()` discovers this
+entry point on startup, imports the `aicq_hermes` package, and calls
+its top-level `register(ctx)` function. This means `pip install
+aicq-hermes` is sufficient — no need to manually copy files into
+`~/.hermes/plugins/`.
+
+The `aicq_hermes/__init__.py` now re-exports `register`,
+`check_requirements`, and `validate_config` from `aicq_hermes.register`
+so the entry-point loader can find them at the top level.
+
+**Caveat**: `hermes plugins list` and `hermes plugins enable` use a
+separate discovery function (`_discover_all_plugins` in
+`plugins_cmd.py`) that only scans the bundled and user-plugin
+directories — it does NOT scan entry points. So entry-point plugins
+won't appear in `hermes plugins list` output, and `hermes plugins
+enable aicq` will say "not installed or bundled". The workaround is
+to add the plugin name to `plugins.enabled` in `~/.hermes/config.yaml`
+manually. The gateway's actual loader does scan entry points, so the
+plugin loads and connects correctly despite the CLI blindness. This
+CLI limitation is tracked as a separate upstream issue.
 
 ### v1.2.4 — OpenAI-compatible LLM gateways with inline `<think>` reasoning
 
