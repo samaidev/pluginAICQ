@@ -153,6 +153,46 @@ operation.
 
 ## Compatibility Notes
 
+### v1.2.6 — Fix tool calling: adapter registry, JSON serialization, cross-thread async I/O
+
+Three bugs prevented the 8 registered AICQ tools from working when the
+agent tried to invoke them via the Hermes gateway:
+
+1. **`_get_adapter(ctx)` could not find the running adapter.** Hermes-Agent's
+   tool dispatch calls handlers as `handler(args_dict, **kwargs)` — the first
+   positional argument is the tool's args dict, NOT a PluginContext. The
+   original `_get_adapter` used `getattr(ctx, "gateway", None)` which always
+   returned `None` on a dict. Fixed by adding a module-level running-adapter
+   registry in `aicq_hermes/adapter.py` (`set_running_adapter` /
+   `get_running_adapter`); the adapter registers itself on `connect()` and
+   unregisters on `disconnect()`.
+
+2. **Tool handlers returned `dict` instead of JSON string.** Hermes-Agent's
+   tool dispatch contract requires handlers to return a JSON-serialized
+   string (built-in tools all use `json.dumps(...)`). Returning a bare
+   dict/list causes the tool-result message's `content` field to be a
+   non-string Python object, violating the OpenAI Chat Completions wire
+   format. Some LLM gateways reject this with HTTP 503. Fixed by adding a
+   `_json_result()` helper and wrapping all handler return values.
+
+3. **Async network tools failed with `RuntimeError: Timeout context manager
+   should be used inside a task`.** Hermes-Agent's `_run_async()` bridges
+   async tool handlers by spinning up a WORKER THREAD inside the gateway's
+   async context. `aiohttp.ClientSession` is bound to the gateway main loop
+   and cannot be used from a different thread/loop. Fixed by:
+   - Capturing the gateway main event loop at `connect()` time
+     (`_main_loop` module-level global).
+   - Adding a `run_in_main_loop(coro)` helper that uses
+     `asyncio.run_coroutine_threadsafe()` to submit coroutines to the main
+   loop from any thread.
+   - Changing all tool handlers from `is_async=True` to `is_async=False`
+     (synchronous), with each handler calling `_run_async_tool()` to bridge
+     back to the main loop for the actual network I/O.
+
+After these fixes, `aicq_status` (in-memory), `aicq_friends_list` (REST
+GET), `aicq_chat_history` (REST GET), and `aicq_chat_send` (WebSocket)
+all work correctly when invoked by the LLM via function calling.
+
 ### v1.2.5 — `hermes_agent.plugins` entry point (auto-discovery)
 
 The package now registers a `hermes_agent.plugins` entry point in

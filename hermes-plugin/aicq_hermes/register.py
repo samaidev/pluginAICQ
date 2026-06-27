@@ -85,7 +85,7 @@ def register(ctx):
             },
         },
         handler=_tool_status,
-        is_async=True,
+        is_async=False,
     )
 
     ctx.register_tool(
@@ -100,7 +100,7 @@ def register(ctx):
             },
         },
         handler=_tool_friends_list,
-        is_async=True,
+        is_async=False,
     )
 
     ctx.register_tool(
@@ -124,7 +124,7 @@ def register(ctx):
             },
         },
         handler=_tool_friends_add,
-        is_async=True,
+        is_async=False,
     )
 
     ctx.register_tool(
@@ -158,7 +158,7 @@ def register(ctx):
             },
         },
         handler=_tool_chat_send,
-        is_async=True,
+        is_async=False,
     )
 
     ctx.register_tool(
@@ -187,7 +187,7 @@ def register(ctx):
             },
         },
         handler=_tool_chat_history,
-        is_async=True,
+        is_async=False,
     )
 
     ctx.register_tool(
@@ -215,7 +215,7 @@ def register(ctx):
             },
         },
         handler=_tool_chat_send_file,
-        is_async=True,
+        is_async=False,
     )
 
     # SPEC 合规: 探活 aicqSDK 适配层 (Step 1)
@@ -266,7 +266,7 @@ def register(ctx):
             },
         },
         handler=_tool_chat_stream_chunk,
-        is_async=True,
+        is_async=False,
     )
 
     ctx.register_tool(
@@ -294,7 +294,7 @@ def register(ctx):
             },
         },
         handler=_tool_chat_stream_end,
-        is_async=True,
+        is_async=False,
     )
 
     logger.info("AICQ Hermes plugin registered (platform + 8 tools)")
@@ -303,101 +303,144 @@ def register(ctx):
 # ── Tool Handlers ───────────────────────────────────────────────────────
 # These are async functions that delegate to the running adapter instance.
 
-async def _get_adapter(ctx) -> "AicqPlatformAdapter | None":
-    """Get the running AICQ adapter from the gateway context."""
-    try:
-        # Hermes stores running adapters in ctx.gateway.platforms
-        gateway = getattr(ctx, "gateway", None)
-        if gateway is None:
-            return None
+def _get_adapter(ctx=None) -> "AicqPlatformAdapter | None":
+    """Get the running AICQ adapter (synchronous).
 
-        # Handle dict-based gateway
-        if isinstance(gateway, dict):
-            platforms = gateway.get("platforms", {})
-            adapter = platforms.get("aicq")
-            if adapter:
-                return adapter
-        else:
-            # Handle object-based gateway
-            platforms = getattr(gateway, "platforms", None)
-            if platforms is None:
-                return None
-            if isinstance(platforms, dict):
-                adapter = platforms.get("aicq")
-            else:
-                adapter = getattr(platforms, "aicq", None)
-            if adapter:
-                return adapter
+    Hermes-Agent's tool dispatch calls handlers as
+    ``handler(args_dict, **kwargs)`` — the first positional argument is
+    the tool's args dict, NOT a PluginContext. So we cannot reach the
+    adapter via ``ctx.gateway.platforms`` (the original design
+    assumption was wrong).
+
+    Instead, the adapter registers itself on connect() to a
+    module-level singleton in ``aicq_hermes.adapter``. We read from
+    that singleton here. The ``ctx`` argument is kept for backward
+    compatibility (older handler signatures) but is no longer used.
+    """
+    try:
+        from .adapter import get_running_adapter
+        return get_running_adapter()
     except Exception:
         pass
     return None
 
 
-async def _tool_status(ctx, **kwargs):
-    from .adapter import AicqPlatformAdapter
-    adapter = await _get_adapter(ctx)
+def _json_result(obj) -> str:
+    """Serialize a tool result dict/list to a JSON string.
+
+    Hermes-Agent's tool dispatch contract requires handlers to return a
+    JSON string (built-in tools all use ``json.dumps(...)``). Returning
+    a bare dict/list causes the tool-result message's ``content`` field
+    to be a non-string Python object, which violates the OpenAI Chat
+    Completions wire format (``content`` must be a string). Some LLM
+    gateways reject this with HTTP 503.
+    """
+    import json
+    if isinstance(obj, str):
+        return obj
+    try:
+        return json.dumps(obj, ensure_ascii=False, default=str)
+    except Exception:
+        return json.dumps({"error": f"serialization failed: {obj!r}"})
+
+
+def _run_async_tool(coro_factory, *args, **kwargs):
+    """Run an async adapter method from a sync tool handler.
+
+    Hermes-Agent's tool dispatch bridges async handlers via _run_async(),
+    which — inside the gateway's async context — spins up a WORKER THREAD
+    to run the handler. aiohttp.ClientSession is bound to the gateway
+    main loop and fails with ``RuntimeError: Timeout context manager
+    should be used inside a task`` when used from the worker thread.
+
+    This helper calls ``run_in_main_loop()`` (from aicq_hermes.adapter)
+    to submit the coroutine to the gateway main loop and block on the
+    result. Tool handlers are registered as ``is_async=False`` so hermes
+    calls them directly from the worker thread; this function then
+    bridges back to the main loop for the actual network I/O.
+
+    Args:
+        coro_factory: a callable that returns a coroutine (e.g.
+            ``lambda: adapter.aicq_friends_list()``). We take a factory
+            instead of a coroutine so the coroutine is created inside
+            the main loop's context.
+    """
+    try:
+        from .adapter import run_in_main_loop
+        return run_in_main_loop(coro_factory())
+    except Exception as e:
+        import json
+        return json.dumps({"error": f"tool execution failed: {type(e).__name__}: {e}"})
+
+
+# ── Tool Handlers (synchronous, bridge to main loop for async I/O) ────────
+
+def _tool_status(ctx, **kwargs):
+    adapter = _get_adapter(ctx)
     if not adapter:
-        return {"error": "AICQ adapter not running"}
-    return await adapter.aicq_status()
+        return _json_result({"error": "AICQ adapter not running"})
+    # aicq_status is a pure in-memory read — no network, safe to call
+    # directly without the main-loop bridge.
+    return _json_result(_run_async_tool(lambda: adapter.aicq_status()))
 
 
-async def _tool_friends_list(ctx, **kwargs):
-    adapter = await _get_adapter(ctx)
+def _tool_friends_list(ctx, **kwargs):
+    adapter = _get_adapter(ctx)
     if not adapter:
-        return {"error": "AICQ adapter not running"}
-    return await adapter.aicq_friends_list()
+        return _json_result({"error": "AICQ adapter not running"})
+    return _json_result(_run_async_tool(lambda: adapter.aicq_friends_list()))
 
 
-async def _tool_friends_add(ctx, aicq_number: str = "", **kwargs):
-    adapter = await _get_adapter(ctx)
+def _tool_friends_add(ctx, aicq_number: str = "", **kwargs):
+    adapter = _get_adapter(ctx)
     if not adapter:
-        return {"error": "AICQ adapter not running"}
+        return _json_result({"error": "AICQ adapter not running"})
     if not aicq_number:
-        return {"error": "aicq_number is required"}
-    return await adapter.aicq_friends_add(aicq_number)
+        return _json_result({"error": "aicq_number is required"})
+    return _json_result(_run_async_tool(lambda: adapter.aicq_friends_add(aicq_number)))
 
 
-async def _tool_chat_send(ctx, target_id: str = "", content: str = "", msg_type: str = "text", **kwargs):
-    adapter = await _get_adapter(ctx)
+def _tool_chat_send(ctx, target_id: str = "", content: str = "", msg_type: str = "text", **kwargs):
+    adapter = _get_adapter(ctx)
     if not adapter:
-        return {"error": "AICQ adapter not running"}
+        return _json_result({"error": "AICQ adapter not running"})
     if not target_id or not content:
-        return {"error": "target_id and content are required"}
-    return await adapter.aicq_chat_send(target_id, content, msg_type)
+        return _json_result({"error": "target_id and content are required"})
+    return _json_result(_run_async_tool(lambda: adapter.aicq_chat_send(target_id, content, msg_type)))
 
 
-async def _tool_chat_history(ctx, friend_id: str = "", limit: int = 50, **kwargs):
-    adapter = await _get_adapter(ctx)
+def _tool_chat_history(ctx, friend_id: str = "", limit: int = 50, **kwargs):
+    adapter = _get_adapter(ctx)
     if not adapter:
-        return {"error": "AICQ adapter not running"}
+        return _json_result({"error": "AICQ adapter not running"})
     if not friend_id:
-        return {"error": "friend_id is required"}
-    return await adapter.aicq_chat_history(friend_id, limit)
+        return _json_result({"error": "friend_id is required"})
+    return _json_result(_run_async_tool(lambda: adapter.aicq_chat_history(friend_id, limit)))
 
 
-async def _tool_chat_send_file(ctx, target_id: str = "", file_path: str = "", **kwargs):
-    adapter = await _get_adapter(ctx)
+def _tool_chat_send_file(ctx, target_id: str = "", file_path: str = "", **kwargs):
+    adapter = _get_adapter(ctx)
     if not adapter:
-        return {"error": "AICQ adapter not running"}
+        return _json_result({"error": "AICQ adapter not running"})
     if not target_id or not file_path:
-        return {"error": "target_id and file_path are required"}
-    return await adapter.aicq_chat_send_file(target_id, file_path)
+        return _json_result({"error": "target_id and file_path are required"})
+    return _json_result(_run_async_tool(lambda: adapter.aicq_chat_send_file(target_id, file_path)))
 
 
-async def _tool_chat_stream_chunk(ctx, target_id: str = "", chunk_type: str = "text",
-                                  data=None, **kwargs):
-    adapter = await _get_adapter(ctx)
+def _tool_chat_stream_chunk(ctx, target_id: str = "", chunk_type: str = "text",
+                            data=None, **kwargs):
+    adapter = _get_adapter(ctx)
     if not adapter:
-        return {"error": "AICQ adapter not running"}
+        return _json_result({"error": "AICQ adapter not running"})
     if not target_id:
-        return {"error": "target_id is required"}
-    return await adapter.aicq_chat_stream_chunk(target_id, chunk_type, data)
+        return _json_result({"error": "target_id is required"})
+    return _json_result(_run_async_tool(lambda: adapter.aicq_chat_stream_chunk(target_id, chunk_type, data)))
 
 
-async def _tool_chat_stream_end(ctx, target_id: str = "", message_id: str = "", **kwargs):
-    adapter = await _get_adapter(ctx)
+def _tool_chat_stream_end(ctx, target_id: str = "", message_id: str = "", **kwargs):
+    adapter = _get_adapter(ctx)
     if not adapter:
-        return {"error": "AICQ adapter not running"}
+        return _json_result({"error": "AICQ adapter not running"})
     if not target_id:
-        return {"error": "target_id is required"}
-    return await adapter.aicq_chat_stream_end(target_id, message_id)
+        return _json_result({"error": "target_id is required"})
+    return _json_result(_run_async_tool(lambda: adapter.aicq_chat_stream_end(target_id, message_id)))

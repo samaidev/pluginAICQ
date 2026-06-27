@@ -39,6 +39,98 @@ from .chat import ChatManager
 
 logger = logging.getLogger("aicq-hermes")
 
+# ─── Module-level running-adapter registry ──────────────────────────────────
+# Tool handlers (register.py:_get_adapter) need to access the running
+# AicqPlatformAdapter instance to delegate tool calls (aicq_status,
+# aicq_friends_list, etc.). Hermes-Agent's tool dispatch calls handlers
+# as ``handler(args_dict, **kwargs)`` — there is no PluginContext passed
+# at dispatch time, so handlers cannot reach the adapter via
+# ``ctx.gateway.platforms`` (the original design assumption was wrong).
+#
+# Instead, the adapter registers itself here on successful connect() and
+# unregisters on disconnect(). Tool handlers read from this module-level
+# singleton. This is safe because:
+#   - There is only one AICQ adapter per gateway process (the platform
+#     registry enforces single-instance semantics).
+#   - connect()/disconnect() are called by the gateway's main event loop,
+#     so there's no concurrent registration race.
+_running_adapter: "AicqPlatformAdapter | None" = None
+
+# ─── Gateway main event loop reference ──────────────────────────────────────
+# Hermes-Agent's tool dispatch bridges async handlers via _run_async(),
+# which — inside the gateway's async context — spins up a WORKER THREAD
+# to run the handler. aiohttp.ClientSession is bound to the loop that
+# created it (the gateway main loop), so calling session.request() from
+# the worker thread triggers:
+#   RuntimeError: Timeout context manager should be used inside a task
+#
+# To work around this, we capture the gateway main loop at connect()
+# time and expose a ``run_in_main_loop(coro)`` helper that tool handlers
+# can call from any thread. It uses asyncio.run_coroutine_threadsafe()
+# to submit the coroutine to the main loop and block on the result.
+_main_loop: "asyncio.AbstractEventLoop | None" = None
+
+
+def set_running_adapter(adapter: "AicqPlatformAdapter | None") -> None:
+    """Register/unregister the running adapter instance.
+
+    Called by AicqPlatformAdapter.connect() / disconnect().
+    Also captures the gateway main event loop for cross-thread async
+    execution (see ``run_in_main_loop``).
+    """
+    global _running_adapter, _main_loop
+    _running_adapter = adapter
+    if adapter is not None:
+        try:
+            _main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _main_loop = None
+    else:
+        _main_loop = None
+
+
+def get_running_adapter() -> "AicqPlatformAdapter | None":
+    """Return the currently running adapter, or None."""
+    return _running_adapter
+
+
+def run_in_main_loop(coro) -> Any:
+    """Run a coroutine on the gateway main event loop from any thread.
+
+    Hermes-Agent's tool dispatch runs async handlers in a worker thread
+    (via ``_run_async``). aiohttp sessions are bound to the main loop
+    and fail with ``RuntimeError: Timeout context manager should be
+    used inside a task`` when used from a different thread/loop.
+
+    This helper uses ``asyncio.run_coroutine_threadsafe()`` to submit
+    the coroutine to the gateway main loop (captured at connect() time)
+    and blocks on the result. If called from the main loop itself
+    (e.g. in CLI mode), it runs the coroutine directly via
+    ``asyncio.ensure_future``.
+
+    Raises ``RuntimeError`` if no main loop is available (e.g. adapter
+    not connected yet).
+    """
+    import asyncio
+    if _main_loop is None:
+        raise RuntimeError("No gateway main loop available — adapter not connected")
+    try:
+        loop = asyncio.get_running_loop()
+        # We're inside a loop — but is it the main loop?
+        if loop is _main_loop:
+            # Same loop: just await directly via a future
+            import concurrent.futures
+            fut = concurrent.futures.Future()
+            task = asyncio.ensure_future(coro)
+            task.add_done_callback(lambda t: fut.set_result(t.result()) if not t.exception() else fut.set_exception(t.exception()))
+            return fut.result(timeout=60)
+    except RuntimeError:
+        # No running loop in this thread — we're in a worker thread
+        pass
+    # Submit to main loop from a different thread
+    future = asyncio.run_coroutine_threadsafe(coro, _main_loop)
+    return future.result(timeout=60)
+
 
 def _env_dict(config) -> dict:
     """Best-effort extraction of env-style settings from a config object.
@@ -141,6 +233,7 @@ class AicqPlatformAdapter(BasePlatformAdapter):
             await self._fetch_initial_unread()
 
             self._mark_connected()
+            set_running_adapter(self)
             logger.info("AICQ connected successfully")
             return True
 
@@ -150,6 +243,7 @@ class AicqPlatformAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from AICQ server."""
+        set_running_adapter(None)
         await self.chat.stop_polling()
         await self.server.close()
         logger.info("AICQ disconnected")
