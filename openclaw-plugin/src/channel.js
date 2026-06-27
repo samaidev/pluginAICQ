@@ -404,9 +404,9 @@ _plugin.gateway = {
 
     // Wire up inbound message handling via channelRuntime if available
     if (ctx.channelRuntime) {
-      const { reply, routing } = ctx.channelRuntime;
-      if (reply && routing) {
-        console.log("[AICQ Channel] channelRuntime available — AI dispatch enabled");
+      const { reply, routing, inbound, session } = ctx.channelRuntime;
+      if (reply && routing && inbound) {
+        console.log("[AICQ Channel] channelRuntime available — AI dispatch enabled (inbound.run mode)");
 
         // Set up the auto-accept callback for friend_request WS events.
         // When the server pushes a friend_request, the ChatManager calls
@@ -445,237 +445,230 @@ _plugin.gateway = {
               // If there's an active AI turn in progress, abort it NOW so
               // the user's new message gets immediate attention instead of
               // being queued behind the current (potentially long) reply.
-              // The aborted turn's partial output (if any) has already been
-              // streamed; we just stop generating more.
               if (runtime.activeTurnAbort && !runtime.activeTurnAbort.signal.aborted) {
                 console.log("[AICQ Channel] New inbound message — aborting current turn for preemption");
                 runtime.activeTurnAbort.abort('preempted-by-new-message');
               }
               runtime.activeTurnAbort = null;
 
-              const resolvedAgentId = agentId;
               const fromId = msg.from_id || msg.from || msg.sender_id;
               const isGroup = !!(msg.is_group || msg.isGroup);
-              const isFileMsg = !!(msg.local_path || msg._synthetic);
               let textContent = msg.content || msg.text || "";
 
-              // For file messages, include the local path info in the dispatch text
-              if (isFileMsg && msg.local_path) {
-                // The content already includes file info (from the synthetic message
-                // generated in chat.js), so we just pass it through to the AI
-              }
-
-              const routeResult = await routing.resolveAgentRoute({
-                channelId: "aicq-chat",
-                accountId,
-                fromId,
-                chatType: isGroup ? "group" : "dm",
+              // [FIX v3.16] Use channelRuntime.inbound.run() pattern (same as
+              // OpenClaw built-in SMS channel) instead of directly calling
+              // reply.dispatchReplyWithBufferedBlockDispatcher(). The old
+              // direct call hung silently in OpenClaw 2026.6.8 because the
+              // session/context setup that inbound.run() performs was skipped.
+              const route = routing.resolveAgentRoute({
                 cfg,
+                channel: "aicq-chat",
+                accountId,
+                peer: {
+                  kind: isGroup ? "group" : "direct",
+                  id: fromId,
+                },
               });
+              const sessionKey = route.sessionKey;
+              console.log("[AICQ Channel] inbound.run route: agentId=" + route.agentId + " sessionKey=" + sessionKey);
 
-              if (routeResult?.agentId) {
-                // Generate a stream id for this reply turn. The aicq.me
-                // server uses stream_id to accumulate chunks and persist
-                // the final assembled text on stream_end.
-                const streamId = (typeof crypto !== "undefined" && crypto.randomUUID)
-                  ? crypto.randomUUID()
-                  : `stream_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-                // Register the stream so we can track user-initiated cancel
-                // (when the user clicks Stop in the web UI, the server sends
-                // a stream_cancel WS message; _handleStreamCancel sets
-                // streamState.cancelled = true).
-                const streamState = runtime.chat.registerStream(streamId);
-                let streamStarted = false;
-                let streamEnded = false;
-                let streamChunksSent = 0; // track whether any stream_chunk was actually sent
-                // Track the recipient so onSettled can finalize
-                const streamTarget = fromId;
-                // Accumulate text for fallback persistence if stream_end fails
-                let accumulatedText = "";
+              // Generate a stream id for this reply turn. The aicq.me server
+              // uses stream_id to accumulate chunks and persist the final
+              // assembled text on stream_end.
+              const streamId = (typeof crypto !== "undefined" && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : `stream_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+              const streamState = runtime.chat.registerStream(streamId);
+              let streamStarted = false;
+              let streamEnded = false;
+              let streamChunksSent = 0;
+              const streamTarget = fromId;
+              let accumulatedText = "";
 
-                // AbortController for this turn — allows real-time interruption
-                // when the user sends a new message (preempt) or clicks Stop.
-                // Passing abortSignal to dispatchReplyWithBufferedBlockDispatcher
-                // makes OpenClaw abort the underlying model run + tool calls.
-                const turnAbortController = new AbortController();
-                // Register this turn's abort controller so that:
-                // 1. When a new inbound message arrives, channel.js can abort
-                //    the current turn before starting a new one (real preemption).
-                // 2. When stream_cancel is received (user clicked Stop), we
-                //    abort the current turn.
-                runtime.activeTurnAbort = turnAbortController;
-                streamState.abortController = turnAbortController;
+              // AbortController for this turn — allows real-time interruption
+              const turnAbortController = new AbortController();
+              runtime.activeTurnAbort = turnAbortController;
+              streamState.abortController = turnAbortController;
 
-                const ensureStreamStart = async () => {
-                  if (streamStarted) return;
-                  streamStarted = true;
-                  // No explicit "stream_start" message — server auto-creates
-                  // the StreamBuffer on the first stream_chunk.
-                };
+              const ensureStreamStart = async () => {
+                if (streamStarted) return;
+                streamStarted = true;
+              };
 
-                const endStreamSafe = async () => {
-                  if (streamEnded || !streamStarted) return;
-                  streamEnded = true;
-                  runtime.chat.unregisterStream(streamId);
-                  // If no chunks were ever sent, don't send stream_end (server
-                  // would reject with "Stream not found" because no StreamBuffer
-                  // exists). Instead, fall back to sendMessage if we have text.
-                  if (!streamChunksSent) {
-                    console.log("[AICQ Channel] endStreamSafe: no chunks sent, skipping stream_end");
-                    if (accumulatedText && runtime.chat) {
-                      try {
-                        await runtime.chat.sendMessage(resolvedAgentId, streamTarget, accumulatedText, { isGroup: false });
-                      } catch (e2) {
-                        console.error("[AICQ Channel] Fallback sendMessage failed:", e2.message);
-                      }
-                    }
-                    return;
-                  }
-                  try {
-                    await runtime.chat.endStream(resolvedAgentId, streamTarget, streamId);
-                  } catch (e) {
-                    console.warn("[AICQ Channel] endStream failed:", e.message);
-                    // Fallback: persist via sendMessage so the message isn't lost
-                    if (accumulatedText && runtime.chat) {
-                      try {
-                        await runtime.chat.sendMessage(resolvedAgentId, streamTarget, accumulatedText, { isGroup: false });
-                      } catch (e2) {
-                        console.error("[AICQ Channel] Fallback sendMessage failed:", e2.message);
-                      }
+              const endStreamSafe = async () => {
+                if (streamEnded || !streamStarted) return;
+                streamEnded = true;
+                runtime.chat.unregisterStream(streamId);
+                if (!streamChunksSent) {
+                  console.log("[AICQ Channel] endStreamSafe: no chunks sent, skipping stream_end");
+                  if (accumulatedText && runtime.chat) {
+                    try {
+                      await runtime.chat.sendMessage(agentId, streamTarget, accumulatedText, { isGroup: false });
+                    } catch (e2) {
+                      console.error("[AICQ Channel] Fallback sendMessage failed:", e2.message);
                     }
                   }
-                };
-
-                await reply.dispatchReplyWithBufferedBlockDispatcher({
-                  ctx: {
-                    channelId: "aicq-chat",
-                    accountId,
-                    fromId,
-                    Body: textContent,
-                    CommandBody: textContent,
-                    RawBody: textContent,
-                    chatType: isGroup ? "group" : "dm",
-                  },
-                  cfg,
-                  // Configure block reply chunking so deliver() is called
-                  // frequently with small text blocks (instead of one big
-                  // block at the end). This gives the user a real streaming
-                  // experience: each block is then split into ~20-char
-                  // stream_chunk WS messages, and the stop button has time
-                  // to be visible/clickable during the stream.
-                  replyOptions: {
-                    blockReplyChunking: {
-                      minChars: 20,
-                      maxChars: 80,
-                      breakPreference: "sentence",
-                      flushOnParagraph: true,
-                    },
-                    // Pass the abort signal so OpenClaw aborts the model run
-                    // + tool calls when we call turnAbortController.abort().
-                    abortSignal: turnAbortController.signal,
-                    // ── Tool call streaming ──────────────────────────────
-                    // Forward tool_call / tool_result events to the aicq.me
-                    // web UI as stream_chunk messages with chunkType=tool_call
-                    // / tool_result. The frontend renders these as tool cards
-                    // showing which tool was called, its input, and its output.
-                    onToolResult: async (payload) => {
-                      // onToolResult fires after a tool completes. The payload
-                      // is a ReplyPayload containing the tool result text.
-                      // We send it as a tool_result chunk so the UI can show
-                      // the tool's output in the tool card.
-                      try {
-                        if (payload?.text) {
-                          await runtime.chat.sendStreamChunk(
-                            resolvedAgentId,
-                            streamTarget,
-                            streamId,
-                            payload.text,
-                            "tool_result"
-                          );
-                          streamChunksSent++;
-                        }
-                      } catch (e) {
-                        console.warn("[AICQ Channel] onToolResult send failed:", e.message);
-                      }
-                    },
-                    onAgentToolResult: (event) => {
-                      // onAgentToolResult is a sync callback that fires with
-                      // { toolName, result, isError }. We send a tool_call
-                      // chunk so the UI shows the tool card with its name.
-                      try {
-                        const toolData = {
-                          name: event.toolName,
-                          input: event.result,
-                          success: !event.isError,
-                        };
-                        runtime.chat.sendStreamChunk(
-                          resolvedAgentId,
-                          streamTarget,
-                          streamId,
-                          JSON.stringify(toolData),
-                          "tool_call",
-                          toolData
-                        );
-                        streamChunksSent++;
-                      } catch (e) {
-                        console.warn("[AICQ Channel] onAgentToolResult send failed:", e.message);
-                      }
-                    },
-                  },
-                  dispatcherOptions: {
-                    deliver: async (payload) => {
-                      if (!runtime.chat || !payload.text) return;
-                      // If the user clicked Stop, skip further delivers
-                      if (streamState.cancelled) {
-                        console.log('[AICQ Channel] Stream cancelled, skipping deliver');
-                        return;
-                      }
-                      await ensureStreamStart();
-                      accumulatedText += payload.text;
-                      // Split the block into smaller chunks for character-level
-                      // streaming effect. aicq.me frontend appends each chunk
-                      // to the streaming bubble in real time.
-                      const text = payload.text;
-                      const CHUNK_SIZE = 20; // smaller chunks for finer streaming effect
-                      for (let i = 0; i < text.length; i += CHUNK_SIZE) {
-                        // Check cancel flag before sending each chunk
-                        if (streamState.cancelled) {
-                          console.log('[AICQ Channel] Stream cancelled mid-deliver, stopping');
-                          break;
-                        }
-                        const slice = text.slice(i, i + CHUNK_SIZE);
-                        try {
-                          await runtime.chat.sendStreamChunk(
-                            resolvedAgentId,
-                            streamTarget,
-                            streamId,
-                            slice,
-                            "text"
-                          );
-                          streamChunksSent++;
-                        } catch (e) {
-                          console.warn("[AICQ Channel] sendStreamChunk failed:", e.message);
-                          break;
-                        }
-                        // Small delay so the frontend can render incrementally
-                        // AND the stop button stays visible long enough to click.
-                        // Without this, all chunks arrive in <10ms and the user
-                        // never sees the streaming state.
-                        await new Promise((r) => setTimeout(r, 50));
-                      }
-                    },
-                    onReplyStart: async () => {
-                      await ensureStreamStart();
-                    },
-                  },
-                });
-                // After dispatch returns (all delivers completed), end the stream.
-                // This avoids the race where onSettled fires before deliver.
-                await endStreamSafe();
-                // Clear the active turn abort controller (turn is done)
-                if (runtime.activeTurnAbort === turnAbortController) {
-                  runtime.activeTurnAbort = null;
+                  return;
                 }
+                try {
+                  await runtime.chat.endStream(agentId, streamTarget, streamId);
+                } catch (e) {
+                  console.warn("[AICQ Channel] endStream failed:", e.message);
+                  if (accumulatedText && runtime.chat) {
+                    try {
+                      await runtime.chat.sendMessage(agentId, streamTarget, accumulatedText, { isGroup: false });
+                    } catch (e2) {
+                      console.error("[AICQ Channel] Fallback sendMessage failed:", e2.message);
+                    }
+                  }
+                }
+              };
+
+              const storePath = session.resolveStorePath
+                ? session.resolveStorePath(cfg.session?.store, { agentId: route.agentId })
+                : undefined;
+
+              await inbound.run({
+                channel: "aicq-chat",
+                accountId,
+                raw: msg,
+                adapter: {
+                  ingest: () => ({
+                    id: msg.id || msg.message_id || `aicq_${Date.now()}`,
+                    timestamp: Date.now(),
+                    rawText: textContent,
+                    textForAgent: textContent,
+                    textForCommands: textContent,
+                    raw: msg,
+                  }),
+                  resolveTurn: async () => {
+                    const ctxPayload = inbound.buildContext({
+                      channel: "aicq-chat",
+                      accountId,
+                      timestamp: Date.now(),
+                      from: `aicq:${fromId}`,
+                      sender: {
+                        id: fromId,
+                        name: fromId,
+                      },
+                      conversation: {
+                        kind: isGroup ? "group" : "direct",
+                        id: fromId,
+                        label: fromId,
+                      },
+                      route: {
+                        agentId: route.agentId,
+                        accountId,
+                        routeSessionKey: sessionKey,
+                        dispatchSessionKey: sessionKey,
+                      },
+                      reply: { to: `aicq:${fromId}` },
+                      message: {
+                        rawBody: textContent,
+                        commandBody: textContent,
+                        bodyForAgent: textContent,
+                      },
+                      extra: {
+                        msgId: msg.id || msg.message_id,
+                        isFile: !!(msg.local_path || msg._synthetic),
+                      },
+                    });
+                    return {
+                      cfg,
+                      channel: "aicq-chat",
+                      accountId,
+                      agentId: route.agentId,
+                      routeSessionKey: sessionKey,
+                      storePath,
+                      ctxPayload,
+                      recordInboundSession: session.recordInboundSession,
+                      dispatchReplyWithBufferedBlockDispatcher: reply.dispatchReplyWithBufferedBlockDispatcher,
+                      delivery: {
+                        durable: () => ({ to: fromId }),
+                        deliver: async (payload) => {
+                          if (!runtime.chat || !payload.text) return { visibleReplySent: false };
+                          if (streamState.cancelled) {
+                            console.log('[AICQ Channel] Stream cancelled, skipping deliver');
+                            return { visibleReplySent: false };
+                          }
+                          await ensureStreamStart();
+                          accumulatedText += payload.text;
+                          const text = payload.text;
+                          const CHUNK_SIZE = 20;
+                          for (let i = 0; i < text.length; i += CHUNK_SIZE) {
+                            if (streamState.cancelled) {
+                              console.log('[AICQ Channel] Stream cancelled mid-deliver, stopping');
+                              break;
+                            }
+                            const slice = text.slice(i, i + CHUNK_SIZE);
+                            try {
+                              await runtime.chat.sendStreamChunk(
+                                agentId,
+                                streamTarget,
+                                streamId,
+                                slice,
+                                "text"
+                              );
+                              streamChunksSent++;
+                            } catch (e) {
+                              console.warn("[AICQ Channel] sendStreamChunk failed:", e.message);
+                              break;
+                            }
+                            await new Promise((r) => setTimeout(r, 50));
+                          }
+                          return { visibleReplySent: true };
+                        },
+                      },
+                      dispatcherOptions: {
+                        onReplyStart: async () => {
+                          await ensureStreamStart();
+                        },
+                        abortSignal: turnAbortController.signal,
+                        onToolResult: async (payload) => {
+                          try {
+                            if (payload?.text) {
+                              await runtime.chat.sendStreamChunk(
+                                agentId,
+                                streamTarget,
+                                streamId,
+                                payload.text,
+                                "tool_result"
+                              );
+                              streamChunksSent++;
+                            }
+                          } catch (e) {
+                            console.warn("[AICQ Channel] onToolResult send failed:", e.message);
+                          }
+                        },
+                        onAgentToolResult: (event) => {
+                          try {
+                            const toolData = {
+                              name: event.toolName,
+                              input: event.result,
+                              success: !event.isError,
+                            };
+                            runtime.chat.sendStreamChunk(
+                              agentId,
+                              streamTarget,
+                              streamId,
+                              JSON.stringify(toolData),
+                              "tool_call",
+                              toolData
+                            );
+                            streamChunksSent++;
+                          } catch (e) {
+                            console.warn("[AICQ Channel] onAgentToolResult send failed:", e.message);
+                          }
+                        },
+                      },
+                    };
+                  },
+                },
+              });
+              // After inbound.run returns (all delivers completed), end the stream.
+              await endStreamSafe();
+              if (runtime.activeTurnAbort === turnAbortController) {
+                runtime.activeTurnAbort = null;
               }
             } catch (e) {
               console.error("[AICQ Channel] Inbound message handling error:", e.message, e.stack);
