@@ -26,6 +26,15 @@ class ChatManager {
     // Incoming file chunk assembly state: fileId -> { meta, chunks }
     this._incomingFiles = new Map();
 
+    // [AICQ integration standard] Dedup set for inbound messages.
+    // Prevents WS reconnect / server re-push from triggering duplicate
+    // processing of the same message (which caused the "Leo multi-reply
+    // flood" in teambot — fixed in cf67622). Mirrors the same dedup
+    // strategy used by hermes-plugin's _processed_ids and zagent's
+    // processedMsgs/msgIDSeen maps.
+    // Capped at 1000 entries (trimmed to 500 when exceeded).
+    this._processedMsgIds = new Set();
+
     // Listen for incoming messages via WS
     this.server.onMessage('relay', (data) => this._handleIncoming(data));
     this.server.onMessage('message', (data) => this._handleIncoming(data));
@@ -402,19 +411,81 @@ class ChatManager {
   }
 
   async _handleGroupIncoming(data) {
+    // [AICQ integration standard] Group message handler.
+    // See https://aicq.me/static/integration-guide.html#admin-group-reply
+    //
+    // Field extraction (3-level fallback, mirrors zagent e8755e9 fix):
+    //   top-level camelCase → data wrapper snake_case → data wrapper camelCase
+    // AICQ server SaveGroupMessage persists with snake_case, but WS broadcast
+    // promotes `from` to top level and keeps `sender_name` etc. in data wrapper.
+    // Without this fallback, fromId would be undefined for every group message.
     const agentId = this.server.currentAgentId;
     if (!agentId) return;
 
-    const fromId = data.fromId;
-    const groupId = data.groupId;
+    const dataWrapper = (data && data.data && typeof data.data === 'object') ? data.data : {};
+    const fromId = data.from || data.fromId || dataWrapper.from || dataWrapper.from_id || dataWrapper.fromId;
+    const groupId = data.groupId || data.group_id || dataWrapper.group_id || dataWrapper.groupId;
+    const senderName = dataWrapper.sender_name || dataWrapper.senderName || data.senderName || '';
+    const groupName = dataWrapper.group_name || dataWrapper.groupName || data.groupName || '';
+    const content = data.content || dataWrapper.content || data.text || '';
+    const msgType = data.msgType || data.msg_type || dataWrapper.msg_type || dataWrapper.msgType || 'text';
+
+    // Skip system messages (join/leave notifications)
+    if (msgType === 'system') {
+      console.log('[AICQ Chat] Skipping system message in group', groupId);
+      return;
+    }
+
+    // Skip self messages (anti echo loop)
+    if (fromId && fromId === agentId) {
+      return;
+    }
+
+    if (!content) return;
+
+    // [AICQ integration standard] Dedup: msg_id primary + (group_id, from_id,
+    // content, 10s ts window) fingerprint fallback. Mirrors teambot cf67622
+    // fix for the "Leo multi-reply flood" caused by WS reconnect / server
+    // re-push. Without this, the same group message can be processed multiple
+    // times, triggering repeated AI replies and AICQ server rate limiting.
+    const grpMsgId = dataWrapper.id || dataWrapper.messageId || data.id || data.messageId;
+    if (grpMsgId) {
+      if (this._processedMsgIds.has(grpMsgId)) {
+        console.log('[AICQ Chat] Skipping duplicate group message: msg_id=', String(grpMsgId).slice(0, 12));
+        return;
+      }
+      this._processedMsgIds.add(grpMsgId);
+      if (this._processedMsgIds.size > 1000) {
+        // Trim to 500 (keep most recent — Set preserves insertion order)
+        this._processedMsgIds = new Set(Array.from(this._processedMsgIds).slice(-500));
+      }
+    } else {
+      // Fallback fingerprint dedup (10s window)
+      const ts = data.timestamp || dataWrapper.timestamp || data.ts || 0;
+      if (typeof ts === 'number' && ts > 0 && content) {
+        const tsWindow = Math.floor(ts / 10000);
+        const fingerprint = `grp_${groupId}_${fromId}_${String(content).slice(0, 200)}_${tsWindow}`;
+        if (this._processedMsgIds.has(fingerprint)) {
+          console.log('[AICQ Chat] Skipping duplicate group message (fingerprint): from=', fromId, 'group=', groupId);
+          return;
+        }
+        this._processedMsgIds.add(fingerprint);
+        if (this._processedMsgIds.size > 1000) {
+          this._processedMsgIds = new Set(Array.from(this._processedMsgIds).slice(-500));
+        }
+      }
+    }
 
     // Check silent mode
     const silent = this.db.getGroupSilentMode(agentId, groupId);
-    const mentions = data.mentions || [];
-    const isMentioned = mentions.includes(agentId) || mentions.includes('all');
-
-    const content = data.content || '';
-    const msgType = data.msgType || 'text';
+    // @mention detection: prefer server-provided mentions field, but also
+    // scan content for "@<agentName>" since the AICQ server doesn't always
+    // populate the mentions array (mirrors zagent's content-scan approach).
+    const mentions = data.mentions || dataWrapper.mentions || [];
+    const agentName = (this.identity && this.identity.loadAgent && this.identity.loadAgent(agentId) && this.identity.loadAgent(agentId).name) || '';
+    const isMentioned = mentions.includes(agentId) || mentions.includes('all')
+      || (agentName && content.includes('@' + agentName))
+      || content.includes('@all');
 
     // Detect file/image in group message
     const isFileMessage = this._isFileMessage(msgType, content, data);
@@ -434,10 +505,10 @@ class ChatManager {
       target_id: groupId,
       from_id: fromId,
       to_id: groupId,
-      type: isFileMessage ? (this._isImageMessage(msgType, content, data) ? 'image' : 'file') : (data.msgType || 'text'),
+      type: isFileMessage ? (this._isImageMessage(msgType, content, data) ? 'image' : 'file') : (msgType || 'text'),
       content,
-      file_url: data.file_url || data.fileUrl || null,
-      file_name: originalFileName || data.file_name || data.fileName || null,
+      file_url: data.file_url || data.fileUrl || dataWrapper.file_url || dataWrapper.fileUrl || null,
+      file_name: originalFileName || data.file_name || data.fileName || dataWrapper.file_name || dataWrapper.fileName || null,
       local_path: localFilePath,
       is_group: 1,
       mentions,
@@ -456,7 +527,9 @@ class ChatManager {
         from_id: fromId,
         to_id: groupId,
         type: 'text',
-        content: `[群组中用户发送了${fileType}] ${originalFileName || '未知文件名'}\n本地路径: ${localFilePath}\n请处理该${fileType}。`,
+        content: `[群组中用户发送了${fileType}] ${originalFileName || '未知文件'}
+本地路径: ${localFilePath}
+请处理该${fileType}。`,
         is_group: 1,
         status: 'delivered',
         _synthetic: true,

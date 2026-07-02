@@ -1,5 +1,5 @@
 """
-AICQ Chat Manager — handles message send/receive, friend sync, and unread polling.
+AICQ Chat Manager �?handles message send/receive, friend sync, and unread polling.
 
 Receives inbound messages from the WebSocket and dispatches them to the
 Hermes adapter. Manages outbound message sending via WS relay + REST fallback.
@@ -99,20 +99,94 @@ class ChatManager:
             await self._on_new_message(msg) if asyncio.iscoroutinefunction(self._on_new_message) else self._on_new_message(msg)
 
     async def _handle_group_incoming(self, data: dict):
-        """Handle group messages."""
-        from_id = data.get("fromId") or data.get("from_id") or data.get("from")
-        group_id = data.get("groupId") or data.get("group_id")
-        content = data.get("content", data.get("text", ""))
+        """Handle group messages.
+
+        Aligns with the unified AICQ integration standard (see
+        https://aicq.me/static/integration-guide.html#admin-group-reply):
+        - Field extraction: top-level camelCase → data wrapper snake_case →
+          data wrapper camelCase (3-level fallback, mirrors zagent e8755e9)
+        - Dedup via msg_id (primary) + (group_id, from_id, content, 10s ts
+          window) fingerprint fallback (mirrors teambot cf67622)
+        - Skip self messages (anti echo loop)
+        - Skip system messages (join/leave notifications)
+        - Pass through sender_name + msgType for downstream context
+        """
+        # 3-level fallback field extraction
+        from_id = (data.get("from")
+                   or data.get("fromId")
+                   or (data.get("data", {}) or {}).get("from")
+                   or (data.get("data", {}) or {}).get("from_id")
+                   or (data.get("data", {}) or {}).get("fromId"))
+        group_id = (data.get("groupId")
+                    or data.get("group_id")
+                    or (data.get("data", {}) or {}).get("group_id")
+                    or (data.get("data", {}) or {}).get("groupId"))
+        data_wrapper = data.get("data", {}) or {}
+        content = (data.get("content")
+                   or data_wrapper.get("content")
+                   or data.get("text")
+                   or "")
+        msg_type = (data.get("msgType")
+                    or data.get("msg_type")
+                    or data_wrapper.get("msg_type")
+                    or data_wrapper.get("msgType")
+                    or "text")
+        sender_name = (data_wrapper.get("sender_name")
+                       or data_wrapper.get("senderName")
+                       or data.get("senderName")
+                       or "")
+        group_name = (data_wrapper.get("group_name")
+                      or data_wrapper.get("groupName")
+                      or data.get("groupName")
+                      or "")
+
+        # Skip system messages (join/leave notifications)
+        if msg_type == "system":
+            logger.debug(f"Skipping system message in group {group_id}")
+            return
+
+        # Skip self messages (anti echo loop)
+        if from_id and from_id == self.server.server_account_id:
+            return
 
         if not content:
             return
+
+        # Dedup: msg_id primary + (group_id, from_id, content, 10s ts window)
+        # fingerprint fallback. Mirrors teambot cf67622 fix for the
+        # "Leo multi-reply flood" caused by WS reconnect / server re-push.
+        msg_id = (data_wrapper.get("id")
+                  or data_wrapper.get("messageId")
+                  or data.get("id")
+                  or data.get("messageId"))
+        if msg_id:
+            if msg_id in self._processed_ids:
+                logger.debug(f"Skipping duplicate group message: msg_id={msg_id}")
+                return
+            self._processed_ids.add(msg_id)
+            if len(self._processed_ids) > 10000:
+                self._processed_ids = set(list(self._processed_ids)[-5000:])
+        else:
+            # Fallback fingerprint dedup (10s window)
+            ts = data.get("timestamp") or data_wrapper.get("timestamp") or 0
+            if isinstance(ts, (int, float)) and ts > 0 and content:
+                ts_window = int(ts) // 10000
+                fingerprint = f"grp_{group_id}_{from_id}_{str(content)[:200]}_{ts_window}"
+                if fingerprint in self._processed_ids:
+                    logger.debug(f"Skipping duplicate group message (fingerprint): from={from_id} group={group_id}")
+                    return
+                self._processed_ids.add(fingerprint)
+                if len(self._processed_ids) > 10000:
+                    self._processed_ids = set(list(self._processed_ids)[-5000:])
 
         msg = {
             "from_id": from_id,
             "to_id": group_id,
             "content": str(content),
-            "type": "text",
+            "type": msg_type,
             "is_group": True,
+            "sender_name": sender_name,
+            "group_name": group_name,
             "timestamp": data.get("timestamp", time.time()),
         }
 
@@ -129,7 +203,7 @@ class ChatManager:
         pass
 
     async def _handle_unread_counts(self, data: dict):
-        """Handle unread count notifications — fetch actual messages."""
+        """Handle unread count notifications �?fetch actual messages."""
         unread = data.get("unread", {})
         for friend_id, count in unread.items():
             if count > 0:
@@ -138,10 +212,10 @@ class ChatManager:
 
     async def _on_reconnect(self, data: dict):
         """On WS reconnect, fetch unread messages from all friends."""
-        logger.info("WS reconnected — fetching unread messages")
+        logger.info("WS reconnected �?fetching unread messages")
         try:
             friends = await self.server.list_friends()
-            # Defensive: list_friends() already coerces null → [], but
+            # Defensive: list_friends() already coerces null �?[], but
             # double-guard in case the SDK ever returns None.
             friends = friends or []
             for f in friends:
@@ -156,7 +230,7 @@ class ChatManager:
         try:
             result = await self.server.get_conversation(friend_id, limit=20)
             # Defensive: server may return {"messages": null} when the
-            # conversation is empty (Go nil slice → JSON null).
+            # conversation is empty (Go nil slice �?JSON null).
             messages = result.get("messages")
             if not isinstance(messages, list):
                 messages = []
@@ -202,13 +276,13 @@ class ChatManager:
         NOTE: The server's ``handleMessage`` WS handler reads the recipient from
         the ``to`` field (NOT ``targetId``) and persists the message to the
         ``direct_messages`` table. The older ``handleRelay`` handler only
-        forwards in-memory and does NOT persist — so we use ``type: "message"``
+        forwards in-memory and does NOT persist �?so we use ``type: "message"``
         for DMs to make sure replies are stored server-side and visible in
         conversation history / aicq.me admin backend.
         """
         payload = {"type": msg_type, "content": content, **kwargs}
 
-        # Primary: WS — use "message" for DM (server persists + relays),
+        # Primary: WS �?use "message" for DM (server persists + relays),
         # "group_message" for group (server relays to all members).
         ws_msg = {
             "type": "group_message" if is_group else "message",
@@ -247,7 +321,7 @@ class ChatManager:
     # ── Streaming (LLM status + text chunks) ───────────────────────────
 
     async def send_stream_chunk(self, target_id: str, chunk_type: str = "text",
-                                data=None) -> bool:
+                                data=None, message_id: str = "") -> bool:
         """Send a stream chunk to a friend via WebSocket.
 
         Used for real-time streaming output when the agent is generating a
@@ -278,6 +352,18 @@ class ChatManager:
             # ... round 2 LLM call + tool calls ...
             await chat.send_stream_chunk(target, "text", "Based on the results...")
             await chat.send_stream_end(target)
+
+        Args:
+            target_id: friend account ID
+            chunk_type: chunk type (see list above)
+            data: chunk payload (string for text/reasoning; object for
+                tool_call/tool_result)
+            message_id: optional msg_id for dedup/association. When provided,
+                all chunks in the same streaming round share this msg_id so
+                the frontend can match stream_end with the chunks and avoid
+                duplicate display after persistence. Recommended: generate
+                once per round (e.g. ``msg_{ts}_{rand}``) and pass to both
+                send_stream_chunk and send_stream_end.
         """
         if data is None:
             data = ""
@@ -287,6 +373,8 @@ class ChatManager:
             "chunkType": chunk_type,
             "data": data,
         }
+        if message_id:
+            ws_msg["msg_id"] = message_id
         sent = await self.server.send_ws(ws_msg)
         if not sent:
             logger.warning(f"Stream chunk send failed (WS down) to {target_id}: type={chunk_type}")
@@ -301,7 +389,9 @@ class ChatManager:
 
         Args:
             target_id: friend account ID
-            message_id: optional message ID for dedup/association
+            message_id: optional message ID for dedup/association. Should
+                match the msg_id passed to send_stream_chunk for the same
+                round so the frontend can dedup.
         """
         msg_id = message_id or f"msg_{int(time.time()*1000)}_{os.urandom(3).hex()}"
         ws_msg = {
@@ -342,3 +432,4 @@ class ChatManager:
                 await self._poll_interval
             except asyncio.CancelledError:
                 pass
+
