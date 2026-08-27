@@ -44,6 +44,9 @@ const ChatManager = require(path.join(__dirname, 'lib', 'chat'))
 export const name = 'aicq'
 export const inject = ['tools', 'agents']
 
+/** Fallback resident-agent model id (env-tunable; the AICQ shim accepts any id). */
+const RESIDENT_MODEL = process.env.DSH_AICQ_MODEL || 'glm-4-plus'
+
 export const Config = Schema.object({
   serverUrl: Schema.string().default('https://aicq.me')
     .description('AICQ signaling server URL'),
@@ -196,19 +199,48 @@ async function addFriendByNumber(aicqNumber, message) {
 }
 
 /**
+ * Spawn a resident agent when none is live (web server / long-lived host).
+ * Uses the configured default model (agent-default-model settings) so the
+ * AICQ plugin can deliver inbound DMs as durable followup input.
+ */
+async function ensureResidentAgent(ctx, config) {
+  if (!ctx.agents || typeof ctx.agents.create !== 'function') return null
+  const sessionId = `aicq-${config.agentId || _agentId || 'resident'}-${Date.now().toString(36)}`
+  try {
+    // {{model}} prompt variable (deployment:persona section) resolves from
+    // agentOptions.model — omit it and system-prompt assembly throws UNKNOWN.
+    const defaultModel = config.model || RESIDENT_MODEL
+    const agentOptions = defaultModel ? { model: defaultModel } : {}
+    const published = await ctx.agents.create({ sessionId, agentOptions })
+    // agents.create() resolves to { agent, dispose } — unwrap the live machine.
+    const agent = (published && typeof published === 'object' && 'agent' in published)
+      ? published.agent
+      : published
+    log(`spawned resident agent for AICQ routing: ${sessionId}`)
+    return agent
+  } catch (e) {
+    log(`failed to spawn resident agent: ${e.message}`)
+    return null
+  }
+}
+
+/**
  * Route one inbound AICQ message into an agent's inbox as durable user input.
  * Reply routing happens on the agent's next idle transition.
  */
-function deliverToAgent(ctx, config, fromId, textForAgent) {
+async function deliverToAgent(ctx, config, fromId, textForAgent) {
   let agent = null
   if (config.notifyAgentId) agent = ctx.agents.get?.(config.notifyAgentId) ?? null
   if (!agent && typeof ctx.agents.list === 'function') {
     agent = ctx.agents.list().find((a) => a.status === 'idle' || !a.status) ?? ctx.agents.list()[0] ?? null
   }
   if (!agent) {
-    // No live agent yet — keep it in our own history; tools can still read it.
-    log(`no agent available; message from ${fromId} kept locally only`)
-    return
+    // No live agent yet — spawn a resident one instead of dropping the message.
+    agent = await ensureResidentAgent(ctx, config)
+    if (!agent) {
+      log(`no agent available; message from ${fromId} kept locally only`)
+      return
+    }
   }
   const submittedAt = Date.now()
   agent.followup(createUserMessage({
@@ -379,7 +411,8 @@ export function apply(ctx, config) {
         if (msg.local_path) {
           text += `\n[attachment saved locally: ${msg.local_path}]`
         }
-        deliverToAgent(ctx, config, fromId, text)
+        Promise.resolve(deliverToAgent(ctx, config, fromId, text))
+          .catch((e) => log(`deliver failed: ${e.message}`))
       } catch (e) {
         log(`inbound handling failed: ${e.message}`)
       }

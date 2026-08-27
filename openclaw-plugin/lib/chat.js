@@ -19,6 +19,9 @@ class ChatManager {
     this.uploadsDir = uploadsDir;
     this.userfilesDir = userfilesDir || path.join(path.dirname(uploadsDir), 'userfiles');
     this._onNewMessage = null;
+    // [FIX race] Server replays offline messages right after WS auth, but the channel
+    // wires setOnNewMessage() later. Buffer early arrivals instead of dropping them.
+    this._earlyQueue = [];
 
     // Ensure userfiles directory exists
     fs.mkdirSync(this.userfilesDir, { recursive: true });
@@ -103,6 +106,19 @@ class ChatManager {
 
   setOnNewMessage(callback) {
     this._onNewMessage = callback;
+    const queued = this._earlyQueue.splice(0);
+    for (const m of queued) {
+      Promise.resolve().then(() => callback(m)).catch((e) => console.error('[AICQ Chat] buffered message dispatch error:', e.message));
+    }
+    if (queued.length > 0) console.log(`[AICQ Chat] Replayed ${queued.length} buffered inbound message(s)`);
+  }
+
+  _dispatchInbound(msg) {
+    if (this._onNewMessage) return Promise.resolve(this._onNewMessage(msg));
+    this._earlyQueue.push(msg);
+    if (this._earlyQueue.length > 200) this._earlyQueue.shift();
+    console.warn('[AICQ Chat] _onNewMessage not yet registered — buffering inbound message (queue size:', this._earlyQueue.length + ')');
+    return null;
   }
 
   /**
@@ -376,14 +392,10 @@ class ChatManager {
       status: 'delivered',
     });
 
-    if (this._onNewMessage) {
-      try {
-        await this._onNewMessage(msg);
-      } catch (e) {
-        console.error('[AICQ Chat] _onNewMessage error:', e.message, e.stack);
-      }
-    } else {
-      console.warn('[AICQ Chat] _onNewMessage is not registered!');
+    try {
+      await this._dispatchInbound(msg);
+    } catch (e) {
+      console.error('[AICQ Chat] _onNewMessage error:', e.message, e.stack);
     }
 
     // If this was a file/image message, also inject a synthetic message
@@ -403,7 +415,7 @@ class ChatManager {
         _synthetic: true,  // Mark as synthetic so AI dispatch can handle it
         _original_msg_id: msg.message_id || msg.id,
       };
-      this._onNewMessage(syntheticMsg);
+      this._dispatchInbound(syntheticMsg);
     }
     } catch (e) {
       console.error('[AICQ Chat] _handleIncoming error:', e.message, e.stack);
@@ -535,7 +547,7 @@ class ChatManager {
         _synthetic: true,
         _original_msg_id: msg.message_id || msg.id,
       };
-      this._onNewMessage(syntheticMsg);
+      this._dispatchInbound(syntheticMsg);
     }
   }
 
@@ -726,7 +738,7 @@ class ChatManager {
         _synthetic: true,
         _original_msg_id: msg.message_id || msg.id,
       };
-      this._onNewMessage(syntheticMsg);
+      this._dispatchInbound(syntheticMsg);
     }
   }
 
@@ -840,7 +852,7 @@ class ChatManager {
           _synthetic: true,
           _original_msg_id: msg.message_id || msg.id,
         };
-        this._onNewMessage(syntheticMsg);
+        this._dispatchInbound(syntheticMsg);
       }
     } catch (e) {
       console.error(`[Chat] File assembly failed for ${fileId}:`, e.message);
@@ -972,7 +984,7 @@ class ChatManager {
         _synthetic: true,
         _original_msg_id: msg.message_id || msg.id,
       };
-      this._onNewMessage(syntheticMsg);
+      this._dispatchInbound(syntheticMsg);
     }
 
     return { msg, localPath, originalName };

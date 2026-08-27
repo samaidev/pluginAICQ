@@ -395,15 +395,46 @@ const TOOLS = [
 
 // ── MCP plumbing ──────────────────────────────────────────────────────
 
+// ── stdout protocol guard (MUST run before any lib import logs) ─────────
+// The MCP stdio transport reserves stdout exclusively for JSON-RPC frames.
+// Library modules still use console.log; route every such line to stderr so
+// strict parsers (rmcp) never see non-protocol bytes on the wire.
+const __stderrWrite = process.stderr.write.bind(process.stderr);
+const __stdoutWrite = process.stdout.write.bind(process.stdout);
+console.log = (...args) => {
+  const line = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+  __stderrWrite(`[AICQ MCP][out] ${line}\n`);
+};
+
 async function main() {
   let ready = false;
-  try {
-    await ensureInitialized();
-    ready = true;
-  } catch (e) {
-    // Don't crash codex startup just because the network is down: expose
-    // tools anyway and let handlers surface actionable errors.
-    log(`Initialization deferred (${e.message}); tools will retry lazily.`);
+
+  // Single-flight init lock: concurrent tool calls must not race the
+  // bootstrap sequence (module-level _db/_identity/_chat get assigned
+  // progressively; a second entrant sees _db set and skips ahead).
+  // Single-flight shared by BOTH the background bootstrap and every lazy
+  // tool call. Two independent entry points used to race each other: a tool
+  // could observe `_db` already set while `_chat` was still undefined and
+  // skip ahead ("Cannot read properties of undefined (sendMessage)").
+  let initPromise = null;
+  function startBootstrap() {
+    if (!initPromise) {
+      initPromise = (async () => {
+        try {
+          await ensureInitialized();
+          ready = true;
+          log(`Plugin runtime initialized (v${PLUGIN_VERSION})`);
+        } catch (e) {
+          initPromise = null; // allow retry on next tool call
+          log(`Initialization deferred (${e.message}); tools will retry lazily.`);
+        }
+      })();
+    }
+    return initPromise;
+  }
+  function ensureReadyOnce() {
+    if (ready && _connected) return Promise.resolve();
+    return startBootstrap();
   }
 
   const server = new Server(
@@ -411,6 +442,10 @@ async function main() {
     { capabilities: { tools: {} } }
   );
 
+  // FIX (startup handshake race): handlers registered BEFORE connect, and
+  // connect happens BEFORE heavy E2EE/network bootstrap so the MCP client's
+  // `initialize` / `tools/list` are answered immediately. CallTool retries
+  // initialization lazily via the `ready` flag.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: TOOLS.map(({ name, description, inputSchema }) => ({
       name, description, inputSchema,
@@ -427,10 +462,7 @@ async function main() {
       };
     }
     try {
-      if (!ready) {
-        await ensureInitialized();
-        ready = true;
-      }
+      await ensureReadyOnce();
       const result = await tool.run(req.params.arguments || {});
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -446,7 +478,9 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log(`stdio MCP server ready (plugin v${PLUGIN_VERSION})`);
+  log(`stdio transport attached; bootstrapping runtime in background`);
+  // fire-and-forget; failures reported via log()
+  void startBootstrap();
 }
 
 main().catch((e) => {

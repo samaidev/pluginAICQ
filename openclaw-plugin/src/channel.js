@@ -361,10 +361,7 @@ _plugin.gateway = {
                 message: friendMsg || 'Hi, I\'d like to add you!',
               });
               if (result.error) {
-                const errDetail = typeof result.error === 'string'
-                  ? result.error
-                  : JSON.stringify(result.error);
-                console.warn(`[AICQ Channel] Auto-add friend ${aicqNumber} failed: ${errDetail}`);
+                console.warn(`[AICQ Channel] Auto-add friend ${aicqNumber} failed: ${result.error}`);
               } else {
                 console.log(`[AICQ Channel] Auto-add friend ${aicqNumber}: ${result.status}`);
               }
@@ -839,5 +836,11 @@ _plugin.config = {
 // Without this, config edits under channels.aicq-chat may not trigger the
 // channel restart path on newer hosts.
 _plugin.reload = { configPrefixes: ["channels.aicq-chat"] };
+
+// [FIX tts-crash] OpenClaw dispatch (chooseDispatchRoute -> resolveChannelTtsVoiceDelivery)
+// reads getChannelPlugin(id)?.capabilities.tts?.voice at runtime; some beta
+// builds crash when the plugin object lacks a capabilities node. Declare it.
+if (!_plugin.capabilities) _plugin.capabilities = {};
+_plugin.capabilities.tts = { voice: false };
 
 export const aicqChatPlugin = _plugin;

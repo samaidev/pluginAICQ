@@ -30,8 +30,12 @@
           },
           "autoAddFriends": {
             "type": "array",
-            "items": { "type": "string" },
-            "default": ["1000000"],
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "1000000"
+            ],
             "description": "启动后自动添加为好友的 AICQ 号码列表（如 1000000）"
           },
           "serverUrl": {
@@ -174,5 +178,16 @@
       "qrcode",
       "express"
     ]
+  },
+  "capabilities": {
+    "tts": {
+      "voice": false
+    },
+    "media": false,
+    "threads": false,
+    "reactions": false,
+    "editing": false,
+    "polls": false,
+    "location": false
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "aicq-codex",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AICQ End-to-end Encrypted Chat plugin for OpenAI Codex — Agent Plugins v1 manifest + stdio MCP server exposing AICQ friend management, chat, file transfer, and group messaging tools",
   "type": "module",
   "main": "./mcp/server.js",
