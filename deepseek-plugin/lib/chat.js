@@ -1276,7 +1276,7 @@ class ChatManager {
       parsed && parsed.originalName, parsed && parsed.name,
     ];
     // file_info may be a JSON string (server persists it as TEXT) or object
-    for (const fi of [data && data.file_info, inner && inner.file_info]) {
+    for (const fi of [data && data.file_info, inner && inner.file_info, parsed && parsed.file_info]) {
       if (!fi) continue;
       try {
         const obj = typeof fi === 'string' ? JSON.parse(fi) : fi;
