@@ -130,8 +130,15 @@ class AicqServerClient:
             return
         try:
             await self.login_agent(agent_id)
-        except Exception:
-            logger.info("Login failed, trying registration...")
+        except Exception as e:
+            # [fix 2026-08-27] surface WHY login failed; blind fallback to
+            # register masks transient errors and can mint a duplicate
+            # agent account bound to the SAME public key (server-side
+            # register does not dedupe by key yet).
+            logger.warning(
+                "Login failed (%s: %s); falling back to registration",
+                type(e).__name__, e,
+            )
             await self.register_agent(agent_id)
             await self.login_agent(agent_id)
 

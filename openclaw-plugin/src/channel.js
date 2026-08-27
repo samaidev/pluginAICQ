@@ -361,7 +361,10 @@ _plugin.gateway = {
                 message: friendMsg || 'Hi, I\'d like to add you!',
               });
               if (result.error) {
-                console.warn(`[AICQ Channel] Auto-add friend ${aicqNumber} failed: ${result.error}`);
+                const errDetail = typeof result.error === 'string'
+                  ? result.error
+                  : JSON.stringify(result.error);
+                console.warn(`[AICQ Channel] Auto-add friend ${aicqNumber} failed: ${errDetail}`);
               } else {
                 console.log(`[AICQ Channel] Auto-add friend ${aicqNumber}: ${result.status}`);
               }

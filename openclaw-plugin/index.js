@@ -35,7 +35,7 @@ const DATA_DIR = process.env.AICQ_DATA_DIR || path.join(os.homedir(), ".aicq-plu
 const SERVER_URL = process.env.AICQ_SERVER_URL || "https://aicq.me";
 const AUTO_ADD_FRIENDS = process.env.AICQ_AUTO_ADD_FRIENDS
   ? process.env.AICQ_AUTO_ADD_FRIENDS.split(",").map(s => s.trim()).filter(Boolean)
-  : ["1000000"];  // Default: auto-add user 1000000
+  : [];  // [fix v3.16.1] no silent default: adding a hard-coded test account surprised deployments
 const AUTO_ACCEPT_FRIENDS = process.env.AICQ_AUTO_ACCEPT_FRIENDS !== "false"; // default true
 
 fs.mkdirSync(DATA_DIR, { recursive: true });

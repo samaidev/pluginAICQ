@@ -201,7 +201,7 @@ class AicqPlatformAdapter(BasePlatformAdapter):
 
     # ── Hermes Platform Adapter Interface ───────────────────────────────
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to AICQ server: authenticate, bind master, start WS."""
         try:
             logger.info(f"Connecting to AICQ server: {self.server_url}")

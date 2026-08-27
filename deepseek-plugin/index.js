@@ -68,6 +68,10 @@ const PLUGIN_VERSION = (() => {
 let _ready /* Promise<void> | undefined */
 let _db, _identity, _serverClient, _handshake, _chat
 let _agentId = 'dsh-aicq'
+// [fix 2026-08-27] inbound callback must be attached the moment ChatManager
+// exists -- WS traffic can arrive between connect() and apply()'s
+// `.then(setOnNewMessage)` window, which previously dropped those messages.
+let _onInbound = null
 
 function log(msg) {
   console.error(`[dsh-aicq] ${msg}`)
@@ -99,6 +103,9 @@ async function ensureClient(config) {
     _serverClient = new ServerClient(_identity, _db, config.serverUrl)
     _handshake = new HandshakeManager(_identity, _serverClient, _db)
     _chat = new ChatManager(_identity, _serverClient, _db, uploadsDir, userfilesDir)
+    if (_onInbound) {
+      _chat.setOnNewMessage(_onInbound)
+    }
 
     await _serverClient.ensureAuth(_agentId)
     log(`authenticated as ${_agentId} @ ${config.serverUrl}`)
@@ -249,7 +256,7 @@ export function apply(ctx, config) {
     name: 'aicq_status',
     description: 'Get AICQ encrypted-chat connection status and this agent\'s identity info.',
     parameters: {},
-    output: { schema: { type: 'object' }, render: jsonRender },
+    output: { schema: { type: 'object', additionalProperties: true }, render: jsonRender },
     async execute() {
       return runTool(async () => {
         const info = _identity.getInfo(_agentId) || {}
@@ -270,7 +277,7 @@ export function apply(ctx, config) {
     name: 'aicq_friends_list',
     description: 'List all AICQ friends (humans and AI agents) with online status.',
     parameters: {},
-    output: { schema: { type: 'object' }, render: jsonRender },
+    output: { schema: { type: 'object', additionalProperties: true }, render: jsonRender },
     async execute() {
       return runTool(async () => {
         await syncFriendsFromServer().catch(() => {})
@@ -293,7 +300,7 @@ export function apply(ctx, config) {
       aicq_number: { type: 'string', required: true, description: 'Target AICQ number' },
       message: { type: 'string', description: 'Optional friend request text' },
     },
-    output: { schema: { type: 'object' }, render: jsonRender },
+    output: { schema: { type: 'object', additionalProperties: true }, render: jsonRender },
     async execute(args) {
       return runTool(() => addFriendByNumber(args.aicq_number, args.message))
     },
@@ -306,7 +313,7 @@ export function apply(ctx, config) {
       target_id: { type: 'string', required: true, description: 'Recipient AICQ account ID' },
       content: { type: 'string', required: true, description: 'Message body (markdown renders client-side)' },
     },
-    output: { schema: { type: 'object' }, render: jsonRender },
+    output: { schema: { type: 'object', additionalProperties: true }, render: jsonRender },
     async execute(args) {
       return runTool(async () => {
         const r = await _chat.sendMessage(_agentId, args.target_id, args.content, { isGroup: false })
@@ -322,7 +329,7 @@ export function apply(ctx, config) {
       friend_id: { type: 'string', required: true, description: 'AICQ account ID of the friend' },
       limit: { type: 'number', description: 'Max messages (default 50)' },
     },
-    output: { schema: { type: 'object' }, render: jsonRender },
+    output: { schema: { type: 'object', additionalProperties: true }, render: jsonRender },
     async execute(args) {
       return runTool(async () => ({
         messages: _db.getChatHistory(_agentId, args.friend_id, {
@@ -339,7 +346,7 @@ export function apply(ctx, config) {
       target_id: { type: 'string', required: true, description: 'Recipient AICQ account ID' },
       file_path: { type: 'string', required: true, description: 'Absolute local file path' },
     },
-    output: { schema: { type: 'object' }, render: jsonRender },
+    output: { schema: { type: 'object', additionalProperties: true }, render: jsonRender },
     async execute(args) {
       return runTool(async () => {
         if (!fs.existsSync(args.file_path)) throw new Error(`file not found: ${args.file_path}`)
@@ -363,22 +370,24 @@ export function apply(ctx, config) {
   })
 
   ctx.effect(() => {
+    _onInbound = async (msg) => {
+      try {
+        if (!msg || msg._outbound || msg._synthetic) return
+        const fromId = msg.from_id || msg.from || msg.sender_id
+        if (!fromId) return
+        let text = msg.content || ''
+        if (msg.local_path) {
+          text += `\n[attachment saved locally: ${msg.local_path}]`
+        }
+        deliverToAgent(ctx, config, fromId, text)
+      } catch (e) {
+        log(`inbound handling failed: ${e.message}`)
+      }
+    }
     ensureClient(config)
       .then(() => {
-        _chat.setOnNewMessage(async (msg) => {
-          try {
-            if (!msg || msg._outbound || msg._synthetic) return
-            const fromId = msg.from_id || msg.from || msg.sender_id
-            if (!fromId) return
-            let text = msg.content || ''
-            if (msg.local_path) {
-              text += `\n[attachment saved locally: ${msg.local_path}]`
-            }
-            deliverToAgent(ctx, config, fromId, text)
-          } catch (e) {
-            log(`inbound handling failed: ${e.message}`)
-          }
-        })
+        // Idempotent: re-attach in case client restarted with a new ChatManager.
+        _chat?.setOnNewMessage(_onInbound)
       })
       .catch(() => {})
     return () => {
