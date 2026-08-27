@@ -1071,9 +1071,9 @@ class ChatManager {
         || inner.file_data || inner.fileData || inner.media_data || inner.mediaData
         || (parsed && parsed.data);
       if (base64Data) {
-        const fileName = data.file_name || data.fileName || inner.file_name || inner.fileName
-          || (parsed && parsed.fileName) || (inner.file_info && inner.file_info.filename)
-          || (data.file_info && data.file_info.filename) || 'file.bin';
+        // [FIX 2026-08-27] forwarded/relay frames often drop file_name entirely
+        // — walk every field incl. unwrapping file_info JSON strings.
+        const fileName = this._extractFileName(data, inner, parsed) || 'file.bin';
         return await this._saveBase64FileToUserfiles(agentId, fromId, {
           ...data,
           file_data: base64Data,
@@ -1087,9 +1087,8 @@ class ChatManager {
         || inner.file_url || inner.fileUrl || inner.media_url || inner.mediaUrl
         || (parsed && parsed.fileUrl);
       if (fileUrl) {
-        const fileName = data.file_name || data.fileName || inner.file_name || inner.fileName
-          || (parsed && parsed.fileName) || (inner.file_info && inner.file_info.filename)
-          || (data.file_info && data.file_info.filename) || 'file.bin';
+        // [FIX 2026-08-27] full extraction chain (see _extractFileName).
+        const fileName = this._extractFileName(data, inner, parsed) || 'file.bin';
         return await this._saveUrlFileToUserfiles(agentId, fromId, {
           ...data,
           file_url: fileUrl,
@@ -1147,14 +1146,21 @@ class ChatManager {
       const base64Clean = base64Data.replace(/^data:[^;]+;base64,/, '');
       const fileBuffer = Buffer.from(base64Clean, 'base64');
 
-      const ext = path.extname(originalName) || this._inferExtFromData(base64Data);
+      // [FIX 2026-08-27] placeholder names must not pin the extension to .bin:
+      // real ext > data-URL mime > magic bytes > .bin
+      let ext = '';
+      if (!/^file\.bin$/i.test(originalName)) ext = path.extname(originalName);
+      if (!ext) ext = this._inferExtFromData(base64Data);
+      if (!ext) ext = this._inferExtFromBuffer(fileBuffer);
+      if (!ext) ext = '.bin';
+      const displayName = /^file\.bin$/i.test(originalName) ? `file${ext}` : originalName;
       const safeName = `${timestamp}_${fileId.substring(0, 8)}${ext}`;
       const localPath = path.join(this.userfilesDir, safeName);
 
       fs.writeFileSync(localPath, fileBuffer);
-      console.log(`[Chat] Saved base64 user file: ${originalName} -> ${localPath} (${fileBuffer.length} bytes)`);
+      console.log(`[Chat] Saved base64 user file: ${displayName} -> ${localPath} (${fileBuffer.length} bytes)`);
 
-      return { localPath, originalName };
+      return { localPath, originalName: displayName };
     } catch (e) {
       console.error('[Chat] Failed to save base64 file:', e.message);
       return null;
@@ -1184,12 +1190,31 @@ class ChatManager {
           if (resp.ok) {
             const buffer = await resp.buffer();
             const contentType = resp.headers.get('content-type') || '';
-            const ext = path.extname(originalName) || this._inferExtFromMime(contentType) || '.bin';
+            // [FIX 2026-08-27] forwarded frames lose the original filename and
+            // the server historically sent no Content-Type/Disposition. Priority:
+            // Content-Disposition > real ext > magic bytes > MIME > .bin
+            const dispName = this._parseDispositionFilename(resp.headers.get('content-disposition'));
+            let ext = '';
+            let chosenName = originalName;
+            if (dispName) {
+              chosenName = dispName;
+              if (path.extname(dispName)) ext = path.extname(dispName);
+            }
+            if (!ext && path.extname(originalName) && !/^file\.bin$/i.test(originalName)) {
+              ext = path.extname(originalName);
+            }
+            if (!ext) ext = this._inferExtFromBuffer(buffer);
+            if (!ext && contentType) {
+              const mime = contentType.split(';')[0].trim().toLowerCase();
+              if (mime !== 'application/octet-stream') ext = this._inferExtFromMime(mime);
+            }
+            if (!ext) ext = '.bin';
+            if (/^file\.bin$/i.test(chosenName)) chosenName = `file${ext}`;
             const safeName = `${timestamp}_${fileId.substring(0, 8)}${ext}`;
             const localPath = path.join(this.userfilesDir, safeName);
             fs.writeFileSync(localPath, buffer);
-            console.log(`[Chat] Downloaded aicq.me file: ${fileUrl} -> ${localPath} (${buffer.length} bytes)`);
-            return { localPath, originalName };
+            console.log(`[Chat] Downloaded aicq.me file: ${fileUrl} -> ${localPath} (${buffer.length} bytes, name=${chosenName})`);
+            return { localPath, originalName: chosenName };
           } else {
             console.warn(`[Chat] aicq.me file download failed: HTTP ${resp.status}`);
           }
@@ -1231,6 +1256,83 @@ class ChatManager {
   }
 
   /**
+   * [FIX 2026-08-27] Resolve the best-known filename for an incoming file.
+   *
+   * The "forwarded frame loses the file name" case: WS relay / group echo
+   * frames only carry media_url plus an optional file_info field that the
+   * server stores as a JSON STRING, so none of the previous inner.file_info
+   * .filename lookups ever fired and everything fell back to file.bin.
+   */
+  _extractFileName(data, inner, parsed) {
+    const candidates = [
+      data && data.file_name, data && data.fileName,
+      data && data.media_filename, data && data.mediaFilename,
+      data && data.filename, data && data.name,
+      inner && inner.file_name, inner && inner.fileName,
+      inner && inner.media_filename, inner && inner.mediaFilename,
+      inner && inner.filename, inner && inner.name,
+      parsed && parsed.fileName, parsed && parsed.file_name,
+      parsed && parsed.filename, parsed && parsed.original_name,
+      parsed && parsed.originalName, parsed && parsed.name,
+    ];
+    // file_info may be a JSON string (server persists it as TEXT) or object
+    for (const fi of [data && data.file_info, inner && inner.file_info]) {
+      if (!fi) continue;
+      try {
+        const obj = typeof fi === 'string' ? JSON.parse(fi) : fi;
+        if (obj && typeof obj === 'object') {
+          candidates.push(obj.filename, obj.file_name, obj.fileName,
+            obj.original_name, obj.originalName, obj.name);
+        }
+      } catch (e) {
+        // plain string content (not JSON)
+        if (typeof fi === 'string' && fi.trim()) candidates.push(fi.trim());
+      }
+    }
+    for (const c of candidates) {
+      if (typeof c === 'string' && c.trim()) return c.trim();
+    }
+    return '';
+  }
+
+  /**
+   * [FIX 2026-08-27] Magic-byte sniffing — recovers the real type when both
+   * the frame metadata and HTTP headers are silent.
+   */
+  _inferExtFromBuffer(buf) {
+    if (!buf || buf.length < 12) return '';
+    const startsWith = (arr, off = 0) => arr.every((b, i) => buf[off + i] === b);
+    if (startsWith([0x89, 0x50, 0x4E, 0x47])) return '.png';           // \x89PNG
+    if (startsWith([0xFF, 0xD8, 0xFF])) return '.jpg';                  // JPEG SOI
+    if (startsWith([0x47, 0x49, 0x46, 0x38])) return '.gif';            // GIF87a/89a
+    if (buf.slice(0, 4).toString('ascii') === 'RIFF'
+        && buf.slice(8, 12).toString('ascii') === 'WEBP') return '.webp';
+    if (buf.slice(0, 5).toString('ascii') === '%PDF-') return '.pdf';
+    if (startsWith([0x50, 0x4B, 0x03, 0x04]) || startsWith([0x50, 0x4B, 0x05, 0x06])) return '.zip';
+    if (buf.slice(4, 8).toString('ascii') === 'ftyp') return '.mp4';
+    if (startsWith([0x49, 0x44, 0x33]) || startsWith([0xFF, 0xFB])) return '.mp3';
+    if (startsWith([0x1F, 0x8B])) return '.gz';
+    if (buf[0] === 0x42 && buf[1] === 0x4D) return '.bmp';              // BM
+    return '';
+  }
+
+  /**
+   * Parse filename out of a Content-Disposition header value (RFC 2183/5987).
+   */
+  _parseDispositionFilename(header) {
+    if (!header) return '';
+    let m = header.match(/filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/i);
+    if (m) {
+      try { return decodeURIComponent(m[1].trim()); } catch (e) { return m[1].trim(); }
+    }
+    m = header.match(/filename\s*=\s*"([^"]+)"/i);
+    if (m) return m[1];
+    m = header.match(/filename\s*=\s*([^;]+)/i);
+    if (m) return m[1].trim();
+    return '';
+  }
+
+  /**
    * Helper: synchronous-style fetch for downloading files.
    * Since _saveUrlFileToUserfiles is called from sync context, we use
    * a child_process execSync to download the file.
@@ -1238,11 +1340,14 @@ class ChatManager {
   _inferExtFromMime(mime) {
     const map = {
       'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
-      'image/webp': '.webp', 'image/svg+xml': '.svg',
+      'image/webp': '.webp', 'image/svg+xml': '.svg', 'image/bmp': '.bmp',
       'application/pdf': '.pdf', 'text/plain': '.txt',
-      'application/zip': '.zip', 'application/octet-stream': '.bin',
+      'application/zip': '.zip',
+      'audio/mpeg': '.mp3', 'video/mp4': '.mp4',
     };
-    return map[mime] || '.bin';
+    // [FIX 2026-08-27] unknown & application/octet-stream return '' so callers
+    // fall through to magic-byte sniffing instead of ending at .bin blindly.
+    return map[mime] || '';
   }
 
   /**
