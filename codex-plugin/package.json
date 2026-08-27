@@ -1,0 +1,56 @@
+{
+  "name": "aicq-codex",
+  "version": "0.1.0",
+  "description": "AICQ End-to-end Encrypted Chat plugin for OpenAI Codex — Agent Plugins v1 manifest + stdio MCP server exposing AICQ friend management, chat, file transfer, and group messaging tools",
+  "type": "module",
+  "main": "./mcp/server.js",
+  "bin": {
+    "aicq-codex-mcp": "./mcp/server.js"
+  },
+  "files": [
+    "plugin.json",
+    "mcp.json",
+    "mcp/",
+    "lib/",
+    "skills/",
+    ".codex-plugin/plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "aicq",
+    "codex",
+    "openai-codex",
+    "mcp",
+    "model-context-protocol",
+    "chat",
+    "encrypted",
+    "e2ee",
+    "agent-plugins"
+  ],
+  "author": {
+    "name": "samaidev",
+    "url": "https://aicq.me"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/samaidev/pluginAICQ.git",
+    "directory": "codex-plugin"
+  },
+  "bugs": {
+    "url": "https://github.com/samaidev/aicq/issues"
+  },
+  "homepage": "https://aicq.me",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "node-fetch": "^2.7.0",
+    "sql.js": "^1.14.1",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

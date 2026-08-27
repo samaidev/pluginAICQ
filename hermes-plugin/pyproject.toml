@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aicq-hermes"
-version = "1.2.6"
+version = "1.3.0"
 description = "AICQ platform adapter plugin for Hermes agent — encrypted chat with NaCl, friend management, file transfer, and tool calling (powered by aicqSDK)"
 readme = "README.md"
 license = "MIT"
@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Communications :: Chat",
     "Topic :: Security :: Cryptography",
 ]
@@ -47,3 +48,11 @@ Repository = "https://github.com/samaidev/pluginAICQ"
 
 [tool.setuptools.packages.find]
 include = ["aicq_hermes*"]
+
+# ── Compatibility notes (v1.3.0) ─────────────────────────────────────────
+# Verified against hermes-agent 0.20.x (NousResearch/hermes-agent @ 2026-08):
+#   * entry-point group "hermes_agent.plugins" — unchanged
+#   * PluginContext.register_platform / register_tool signatures — unchanged
+#   * BasePlatformAdapter.__init__(config, platform) — unchanged
+#   * StreamingThinkScrubber internals (_in_block / _buf / _strip_orphan_close_tags)
+#     still present; the <think> recovery shim in aicq_hermes/__init__.py stays valid.

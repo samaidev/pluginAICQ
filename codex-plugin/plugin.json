@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "aicq-codex",
+  "version": "0.1.0",
+  "description": "AICQ End-to-end Encrypted Chat — exposes AICQ friend management, chat, file transfer, and group messaging to OpenAI Codex via a stdio MCP server.",
+  "author": {
+    "name": "samaidev",
+    "url": "https://aicq.me"
+  },
+  "homepage": "https://aicq.me",
+  "repository": "https://github.com/samaidev/pluginAICQ",
+  "license": "MIT",
+  "keywords": [
+    "aicq",
+    "codex",
+    "mcp",
+    "chat",
+    "encrypted",
+    "e2ee"
+  ]
+}

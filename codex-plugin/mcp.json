@@ -1,0 +1,16 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "aicq": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["./mcp/server.js"],
+      "env_vars": [
+        "AICQ_SERVER_URL",
+        "AICQ_DATA_DIR",
+        "AICQ_MASTER_NUMBER",
+        "AICQ_AUTO_ADD_FRIENDS"
+      ]
+    }
+  }
+}

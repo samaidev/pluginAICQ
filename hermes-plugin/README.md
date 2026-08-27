@@ -258,3 +258,13 @@ running plugin unit tests without the full hermes-agent stack).
 ## License
 
 MIT
+
+
+## v1.3.0 更新说明（对齐 hermes-agent 0.20.x）
+
+本版本针对 NousResearch/hermes-agent 最新源码（2026-08，v0.20.5）完成兼容性核对与更新：
+
+- **注册 API 核对**：`PluginContext.register_platform` / `register_tool` 签名与 0.20.x 完全一致；本次新增使用 `install_hint`（依赖缺失时的安装提示）与 `is_connected`（`hermes status` 显示真实连接态）两个可选接缝。
+- **适配器契约核对**：`BasePlatformAdapter.__init__(config, platform)`、`MessageEvent` / `SendResult` 派发路径在 0.20.x 无破坏性变更。
+- **think-scrubber 兼容层加固**：上游 `StreamingThinkScrubber.flush()` 在 0.20.x 仍会丢弃未闭合 `<think>` 块中的内容。补丁逻辑保持不变，但改为通过 `getattr` 防御式读取内部状态并同步上游的边界记账语义，未来内部字段重命名时插件只会优雅降级而不会抛错。
+- **环境支持**：Python 分类器补充 3.14；hermes-agent 侧要求 Python >=3.11,<3.14，建议在 3.12/3.13 运行网关。

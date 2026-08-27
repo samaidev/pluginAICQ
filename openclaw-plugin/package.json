@@ -1,6 +1,6 @@
 {
   "name": "aicq-openclaw",
-  "version": "3.15.1",
+  "version": "3.16.0",
   "description": "AICQ End-to-end Encrypted Chat Channel Plugin for OpenClaw — In-process Channel SDK architecture with friend management, group chat, file transfer, and AI agent communication",
   "type": "module",
   "main": "index.js",
@@ -41,7 +41,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/samaidev/aicq.git",
-    "directory": "openclaw-plugin"
+    "directory": "pluginAICQ/openclaw-plugin"
   },
   "bugs": {
     "url": "https://github.com/samaidev/aicq/issues"
@@ -59,7 +59,7 @@
     "ws": "^8.16.0"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.3.24-beta.2"
+    "openclaw": ">=2026.8.1"
   },
   "peerDependenciesMeta": {
     "openclaw": {
@@ -67,21 +67,22 @@
     }
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "openclaw": {
     "extensions": [
       "./index.js"
     ],
     "setupEntry": "./setup-entry.js",
+    "compat": {
+      "pluginApi": ">=2026.8.1",
+      "minGatewayVersion": "2026.8.1"
+    },
     "channel": {
       "id": "aicq-chat",
       "label": "AICQ Encrypted Chat",
       "blurb": "端到端加密即时通讯频道，基于 NaCl (X25519 + XSalsa20-Poly1305)",
       "icon": "🔐"
-    },
-    "compat": {
-      "pluginApi": ">=2026.3.24-beta.2"
     }
   },
   "optionalDependencies": {

@@ -832,4 +832,9 @@ _plugin.config = {
   },
 };
 
+// [v3.16] Declare hot-reload config prefixes (OpenClaw >= 2026.5 contract).
+// Without this, config edits under channels.aicq-chat may not trigger the
+// channel restart path on newer hosts.
+_plugin.reload = { configPrefixes: ["channels.aicq-chat"] };
+
 export const aicqChatPlugin = _plugin;

@@ -42,12 +42,33 @@ def validate_config(config) -> bool:
     return True
 
 
+def platform_is_connected(config) -> bool:
+    """[v1.3] Passive probe used by gateway status / setup UI.
+
+    Returns True when an AicqPlatformAdapter instance is currently running
+    (i.e. connect() succeeded and disconnect() has not run). Kept side-effect
+    free per PlatformEntry.is_connected contract.
+    """
+    try:
+        from .adapter import get_running_adapter
+        return get_running_adapter() is not None
+    except Exception:
+        return False
+
+
 def register(ctx):
     """
     Register the AICQ platform adapter with Hermes.
 
     This is the main entry point called by the Hermes plugin loader.
     It registers the AICQ platform adapter, tools, and hooks.
+
+    [v1.3] Verified against hermes-agent 0.20.x:
+      * register_platform(name, label, adapter_factory, check_fn,
+        validate_config, required_env, install_hint="", **entry_kwargs)
+      * register_tool(name, toolset, schema, handler, ..., is_async)
+      * BasePlatformAdapter(config, platform) constructor
+    New optional seams registered below: is_connected + install_hint.
     """
     # ── Register Platform Adapter ───────────────────────────────────────
     from .adapter import AicqPlatformAdapter
@@ -59,6 +80,11 @@ def register(ctx):
         check_fn=check_requirements,
         validate_config=validate_config,
         required_env=["AICQ_SERVER_URL", "AICQ_MASTER_NUMBER"],
+        # [v1.3] Shown by hermes setup/status when check_fn reports missing deps.
+        install_hint="pip install aiohttp pynacl websockets  (or reinstall: pip install -U aicq-hermes)",
+        # [v1.3] Real connection state for `hermes status` instead of the
+        # check_fn/validate_config fallback probes.
+        is_connected=platform_is_connected,
         max_message_length=4000,
         platform_hint=(
             "You are chatting via AICQ, a secure chat network. "
@@ -297,7 +323,7 @@ def register(ctx):
         is_async=False,
     )
 
-    logger.info("AICQ Hermes plugin registered (platform + 8 tools)")
+    logger.info("AICQ Hermes plugin registered (platform + tools) [v1.3, hermes-agent >= 0.20]")
 
 
 # ── Tool Handlers ───────────────────────────────────────────────────────

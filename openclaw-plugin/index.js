@@ -20,6 +20,16 @@ import fs from "fs";
 // ── CJS interop — lib/ modules are CommonJS ──────────────────────────
 const require = createRequire(import.meta.url);
 
+// ── Plugin version (single source of truth: package.json) ────────────
+// [v3.16] aicq.status previously reported a stale hard-coded "3.7.0".
+const PLUGIN_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8")).version || "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
+
 // ── Configuration ────────────────────────────────────────────────────
 const DATA_DIR = process.env.AICQ_DATA_DIR || path.join(os.homedir(), ".aicq-plugin");
 const SERVER_URL = process.env.AICQ_SERVER_URL || "https://aicq.me";
@@ -159,7 +169,7 @@ async function handleGatewayMethod(method, kwargs = {}) {
       return {
         state: _serverClient.connected ? "connected" : "disconnected",
         agent_id: currentAgentId,
-        version: "3.7.0",
+        version: PLUGIN_VERSION,
         architecture: "channel",
       };
     case "aicq.friends.list":

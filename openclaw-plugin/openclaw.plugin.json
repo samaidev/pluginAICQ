@@ -1,14 +1,12 @@
 {
-  "kind": "channel",
   "id": "aicq-chat",
   "name": "AICQ Encrypted Chat",
-  "version": "3.15.0",
+  "version": "3.16.0",
   "description": "End-to-end encrypted chat channel via AICQ protocol — in-process Channel plugin using OpenClaw Channel SDK",
   "entry": "index.js",
   "activation": {
     "onStartup": true
   },
-  "enabledByDefault": true,
   "channels": [
     "aicq-chat"
   ],
@@ -29,6 +27,12 @@
             "type": "boolean",
             "default": true,
             "description": "是否自动接受好友请求"
+          },
+          "autoAddFriends": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["1000000"],
+            "description": "启动后自动添加为好友的 AICQ 号码列表（如 1000000）"
           },
           "serverUrl": {
             "type": "string",
@@ -71,6 +75,10 @@
         "autoAcceptFriends": {
           "label": "Auto Accept Friends",
           "help": "Automatically accept incoming friend requests"
+        },
+        "autoAddFriends": {
+          "label": "Auto Add Friends",
+          "help": "Comma-separated AICQ numbers to auto-add as friends on startup (e.g. 1000000)"
         },
         "serverUrl": {
           "label": "AICQ Server URL",
@@ -157,7 +165,7 @@
   },
   "runtime": "node",
   "requires": {
-    "node": ">=18.0.0",
+    "node": ">=22.0.0",
     "packages": [
       "sql.js",
       "tweetnacl",

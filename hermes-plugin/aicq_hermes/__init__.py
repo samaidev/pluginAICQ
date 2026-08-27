@@ -30,6 +30,21 @@ from .register import register, check_requirements, validate_config
 # automatically. Disable with:
 #   AICQ_HERMES_PATCH_THINK_SCRUBBER=false
 def _apply_think_scrubber_compat_patch():
+    """[v1.3] <think>-recovery shim, re-verified against hermes-agent 0.20.x.
+
+    Upstream StreamingThinkScrubber.flush() still DISCARDS held-back content
+    when the stream ends inside an unterminated block (and now also always
+    sets ``_last_emitted_ended_newline = True`` before returning). Our patch
+    keeps its original semantics but:
+
+      * reads scrubber internals defensively via getattr(), so a future
+        rename of ``_buf`` / ``_in_block`` degrades gracefully to unpatched
+        behaviour instead of raising mid-stream;
+      * mirrors the upstream 0.20 boundary bookkeeping
+        (``_last_emitted_ended_newline = True`` when nothing is recovered),
+        so intra-turn retries keep treating the next feed() as a fresh
+        stream boundary exactly like stock hermes-agent does.
+    """
     import os
     if os.environ.get("AICQ_HERMES_PATCH_THINK_SCRUBBER", "true").lower() != "true":
         return
@@ -48,22 +63,35 @@ def _apply_think_scrubber_compat_patch():
     original_flush = StreamingThinkScrubber.flush
 
     def patched_flush(self):
-        if self._in_block:
-            held = self._buf
+        in_block = getattr(self, "_in_block", False)
+        if not in_block:
+            return original_flush(self)
+        held = getattr(self, "_buf", "")
+        strip = getattr(self, "_strip_orphan_close_tags", None)
+        try:
             self._buf = ""
             self._in_block = False
-            if not held:
-                return ""
-            last_nl = held.rfind("\n")
-            if last_nl != -1 and last_nl + 1 < len(held):
-                tail = held[last_nl + 1:]
-                tail = self._strip_orphan_close_tags(tail)
-                if tail:
+        except AttributeError:
+            pass  # read-only shim surface; recover what we can
+        if not held:
+            # Match upstream: start-of-stream is a new boundary.
+            if hasattr(self, "_last_emitted_ended_newline"):
+                self._last_emitted_ended_newline = True
+            return ""
+        last_nl = held.rfind("\n")
+        if last_nl != -1 and last_nl + 1 < len(held):
+            tail = held[last_nl + 1:]
+            if callable(strip):
+                tail = strip(tail)
+            if tail:
+                if hasattr(self, "_last_emitted_ended_newline"):
                     self._last_emitted_ended_newline = tail.endswith("\n")
                 return tail
-            # No newline — fall through to original discard behaviour.
-            return ""
-        return original_flush(self)
+        # No newline after reasoning prose — fall through to the upstream
+        # "discard everything" behaviour + boundary reset.
+        if hasattr(self, "_last_emitted_ended_newline"):
+            self._last_emitted_ended_newline = True
+        return ""
 
     patched_flush._aicq_hermes_patched = True
     patched_flush._aicq_hermes_original = original_flush

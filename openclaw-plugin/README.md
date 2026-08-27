@@ -1,10 +1,18 @@
-# AICQ Chat Plugin v3.7
+# AICQ Chat Plugin v3.16
 
 AICQ 端到端加密聊天频道插件 — 基于 OpenClaw Channel Plugin SDK。
 
-## 架构 (v3.7 Channel SDK)
+## 版本兼容 (v3.16)
 
-v3.7 采用官方 OpenClaw Channel Plugin SDK，使用 `defineChannelPluginEntry` + `createChatChannelPlugin`：
+| 项目 | 要求 |
+|------|------|
+| OpenClaw | `>= 2026.8.1`（`openclaw.compat.pluginApi` 同步对齐） |
+| Node.js | `>= 22.0.0`（跟随 OpenClaw 宿主 engines 要求） |
+| aicq-sdk（可选） | `>= 1.0.0`，未安装时自动回退 legacy 自实现协议栈 |
+
+## 架构 (Channel SDK)
+
+采用官方 OpenClaw Channel Plugin SDK，使用 `defineChannelPluginEntry` + `createChatChannelPlugin`：
 
 - **ESM 模块** — 入口文件使用 ES Module 格式
 - **官方 SDK** — 使用 `openclaw/plugin-sdk/channel-core` 的 `defineChannelPluginEntry` 和 `createChatChannelPlugin`
@@ -78,3 +86,13 @@ openclaw gateway restart
 ## 许可证
 
 MIT License
+
+
+## v3.16 更新说明
+
+- 兼容 OpenClaw **2026.8.x**：`openclaw.compat.pluginApi` / `peerDependencies.openclaw` 提升至 `>=2026.8.1`
+- `engines.node` 对齐宿主要求（Node >= 22）
+- `aicq.status` 的 `version` 字段改为从 package.json 动态读取，修复长期显示旧版本号 3.7.0 的问题
+- 频道账户配置 schema 补充 `autoAddFriends` 字段（此前 startAccount 已读取该字段但清单未声明，严格校验模式下会被拒绝）
+- 声明 `reload.configPrefixes = ["channels.aicq-chat"]`，配置热重载语义与新内核一致
+- 清单移除遗留字段 `kind` / `enabledByDefault`，与官方 bundled channel 清单格式保持一致
