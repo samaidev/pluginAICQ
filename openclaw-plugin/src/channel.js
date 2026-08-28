@@ -347,8 +347,17 @@ _plugin.gateway = {
           }
         }
 
-        // Auto-add friends from config (autoAddFriends list)
-        const autoAddFriends = account?.autoAddFriends || cfg?.channels?.["aicq-chat"]?.autoAddFriends || [];
+        // Auto-add friends from config (autoAddFriends list).
+        // [fix v3.16.4] precedence: explicit channel config > AICQ_AUTO_ADD_FRIENDS env
+        // (runtime.autoAddFriends, set by index.js) > schema-resolved account default.
+        // The manifest default is now [] — it previously shipped a hard-coded author
+        // number, so every fresh install tried to befriend a stranger at startup and
+        // the env override was silently masked by the schema default.
+        const cfgAutoAdd = cfg?.channels?.["aicq-chat"]?.autoAddFriends;
+        const envAutoAdd = Array.isArray(runtime.autoAddFriends) ? runtime.autoAddFriends : [];
+        const autoAddFriends = (Array.isArray(cfgAutoAdd) && cfgAutoAdd.length > 0)
+          ? cfgAutoAdd
+          : (envAutoAdd.length > 0 ? envAutoAdd : (account?.autoAddFriends || []));
         if (Array.isArray(autoAddFriends) && autoAddFriends.length > 0) {
           console.log(`[AICQ Channel] Auto-adding ${autoAddFriends.length} friend(s) from config...`);
           for (const friendEntry of autoAddFriends) {

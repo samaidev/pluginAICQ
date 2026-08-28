@@ -1,7 +1,7 @@
 {
   "id": "aicq-chat",
   "name": "AICQ Encrypted Chat",
-  "version": "3.16.0",
+  "version": "3.16.4",
   "description": "End-to-end encrypted chat channel via AICQ protocol — in-process Channel plugin using OpenClaw Channel SDK",
   "entry": "index.js",
   "activation": {
@@ -33,10 +33,8 @@
             "items": {
               "type": "string"
             },
-            "default": [
-              "1000000"
-            ],
-            "description": "启动后自动添加为好友的 AICQ 号码列表（如 1000000）"
+            "default": [],
+            "description": "启动后自动添加为好友的 AICQ 号码列表；也可用环境变量 AICQ_AUTO_ADD_FRIENDS（逗号分隔）配置"
           },
           "serverUrl": {
             "type": "string",
@@ -82,7 +80,7 @@
         },
         "autoAddFriends": {
           "label": "Auto Add Friends",
-          "help": "Comma-separated AICQ numbers to auto-add as friends on startup (e.g. 1000000)"
+          "help": "Comma-separated AICQ numbers to auto-add as friends on startup (or AICQ_AUTO_ADD_FRIENDS env)"
         },
         "serverUrl": {
           "label": "AICQ Server URL",
