@@ -533,10 +533,16 @@ export function apply(ctx, config) {
           // display name — mirrors chat.js's own isMentioned heuristic.
           const agentName = (_identity && _identity.loadAgent
             && _identity.loadAgent(_agentId) && _identity.loadAgent(_agentId).name) || ''
-          const mentioned = (Array.isArray(msg.mentions)
-            && (msg.mentions.includes(_agentId)
-              || msg.mentions.includes('all')
-              || (serverAid && msg.mentions.includes(serverAid))))
+          // [edge-fix #12b] normalize mentions: saveMessage used to omit the
+          // field and some paths may deliver a JSON string instead of an array.
+          let mentionList = msg.mentions
+          if (typeof mentionList === 'string') {
+            try { mentionList = JSON.parse(mentionList) } catch { mentionList = [] }
+          }
+          if (!Array.isArray(mentionList)) mentionList = []
+          const mentioned = (mentionList.includes(_agentId)
+            || mentionList.includes('all')
+            || (serverAid && mentionList.includes(serverAid)))
             || text.includes('@' + _agentId)
             || (serverAid && text.includes('@' + serverAid))
             || (agentName && text.includes('@' + agentName))
@@ -547,7 +553,7 @@ export function apply(ctx, config) {
           }
           if (msg.status === 'silent') return
           text = `[AICQ group message from ${fromId} in group ${msg.target_id}]\n${text}`
-          const replyTo = { targetId: msg.target_id, isGroup: true, mentions: Array.isArray(msg.mentions) ? msg.mentions : [] }
+          const replyTo = { targetId: msg.target_id, isGroup: true, mentions: mentionList }
           Promise.resolve(deliverToAgent(ctx, config, fromId, text, replyTo))
             .catch((e) => log(`deliver failed: ${e.message}`))
           return

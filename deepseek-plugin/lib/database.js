@@ -372,6 +372,10 @@ class PluginDatabase {
       file_url,
       file_name,
       is_group,
+      // [edge-fix #12b] return mentions so downstream consumers (index.js
+      // group gate) can see who was @mentioned. The DB row stores the JSON
+      // string; downstream expects the parsed array.
+      mentions: Array.isArray(mentions) ? mentions : [],
       timestamp: now,
       status,
     };
