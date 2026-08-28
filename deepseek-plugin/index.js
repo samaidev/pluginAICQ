@@ -262,7 +262,7 @@ function resolveResidentModel(ctx, config) {
   return RESIDENT_MODEL
 }
 
-async function deliverToAgent(ctx, config, fromId, textForAgent) {
+async function deliverToAgent(ctx, config, fromId, textForAgent, replyTo = null) {
   let agent = null
   if (config.notifyAgentId) agent = ctx.agents.get?.(config.notifyAgentId) ?? null
   if (!agent && typeof ctx.agents.list === 'function') {
@@ -319,7 +319,13 @@ async function deliverToAgent(ctx, config, fromId, textForAgent) {
           .trim()
         if (replyText) {
           settle()
-          _chat.sendMessage(_agentId, fromId, replyText, { isGroup: false })
+          // [edge-fix #11] Group messages must be answered IN THE GROUP via the
+          // WS group frame; DMs keep the old direct path.
+          const sendOpts = replyTo
+            ? { isGroup: true, mentions: replyTo.mentions || [] }
+            : { isGroup: false }
+          const sendTarget = replyTo ? replyTo.targetId : fromId
+          _chat.sendMessage(_agentId, sendTarget, replyText, sendOpts)
             .catch((e) => log(`reply send failed: ${e.message}`))
           return
         }
@@ -506,6 +512,38 @@ export function apply(ctx, config) {
         let text = msg.content || ''
         if (msg.local_path) {
           text += `\n[attachment saved locally: ${msg.local_path}]`
+        }
+        // [edge-fix #11] Group awareness. chat.js already extracts groupId /
+        // mentions / is_group; index.js used to flatten every inbound frame to
+        // a DM followup — the agent answered the SENDER privately (or looped
+        // against other agents) instead of the group.
+        const isGroup = msg.is_group === 1 || msg.is_group === true
+          || String(msg.target_id || '').startsWith('grp_')
+        if (isGroup) {
+          // Mention-only by default: reacting to every group message makes
+          // agent-to-agent echo loops unavoidable. Opt out via
+          // DSH_AICQ_GROUP_ALL=1 (not recommended for multi-agent groups).
+          // [edge-fix #11b] _agentId is the LOCAL identity id (dsh-aicq);
+          // the server-side account (ai_xxxxxxxx) is what senders actually
+          // @mention — check both.
+          const serverAid = _serverClient && _serverClient.serverAccountId
+          const mentioned = (Array.isArray(msg.mentions)
+            && (msg.mentions.includes(_agentId)
+              || msg.mentions.includes('all')
+              || (serverAid && msg.mentions.includes(serverAid))))
+            || text.includes('@' + _agentId)
+            || (serverAid && text.includes('@' + serverAid))
+            || text.includes('@all')
+          if (!mentioned && process.env.DSH_AICQ_GROUP_ALL !== '1') {
+            log(`group message from ${fromId} in ${msg.target_id}: not mentioned, skipping`)
+            return
+          }
+          if (msg.status === 'silent') return
+          text = `[AICQ group message from ${fromId} in group ${msg.target_id}]\n${text}`
+          const replyTo = { targetId: msg.target_id, isGroup: true, mentions: Array.isArray(msg.mentions) ? msg.mentions : [] }
+          Promise.resolve(deliverToAgent(ctx, config, fromId, text, replyTo))
+            .catch((e) => log(`deliver failed: ${e.message}`))
+          return
         }
         Promise.resolve(deliverToAgent(ctx, config, fromId, text))
           .catch((e) => log(`deliver failed: ${e.message}`))
