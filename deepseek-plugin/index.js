@@ -210,8 +210,26 @@ async function ensureResidentAgent(ctx, config) {
     // {{model}} prompt variable (deployment:persona section) resolves from
     // agentOptions.model — omit it and system-prompt assembly throws UNKNOWN.
     const defaultModel = resolveResidentModel(ctx, config)
-    const agentOptions = defaultModel ? { model: defaultModel } : {}
-    const published = await ctx.agents.create({ sessionId, agentOptions })
+    // [edge-fix #5F] AgentOptions.provider must have a registered adapter at
+    // call time — model alone leaves the route unresolved and every pre-step
+    // rejects (input stays pending, turn closes empty, silence).
+    const defaultProvider = process.env.DSH_AICQ_PROVIDER
+      || (config && config.provider) || ''
+    const agentOptions = {}
+    if (defaultProvider) agentOptions.provider = defaultProvider
+    if (defaultModel) agentOptions.model = defaultModel
+    // [edge-fix #10] The host's deployment:persona prompt section references
+    // {{cwd}}, resolved from session.header.cwd. A resident agent spawned
+    // without creation meta.cwd dies on EVERY turn with
+    // `prompt variable "{{cwd}}" has no value` (UNKNOWN) — input stays
+    // pending, the turn closes empty, silence. Pass an absolute cwd:
+    // DSH_AICQ_CWD env wins, then the host process cwd.
+    const residentCwd = process.env.DSH_AICQ_CWD || process.cwd()
+    const createOptions = { sessionId, agentOptions }
+    if (residentCwd && residentCwd.startsWith('/')) {
+      createOptions.meta = { cwd: residentCwd }
+    }
+    const published = await ctx.agents.create(createOptions)
     // agents.create() resolves to { agent, dispose } — unwrap the live machine.
     const agent = (published && typeof published === 'object' && 'agent' in published)
       ? published.agent
