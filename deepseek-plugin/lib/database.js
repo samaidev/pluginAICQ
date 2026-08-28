@@ -49,6 +49,7 @@ class PluginDatabase {
 
   // ── Persist database to disk ────────────────────────────────────────
   _save() {
+    if (!this.db) return // [edge-fix #5E] sql.js not ready (or closed) — nothing to persist
     try {
       const data = this.db.export();
       const buffer = Buffer.from(data);

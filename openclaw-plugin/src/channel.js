@@ -453,6 +453,13 @@ _plugin.gateway = {
 
               const fromId = msg.from_id || msg.from || msg.sender_id;
               const isGroup = !!(msg.is_group || msg.isGroup);
+              // [FIX v3.16.3 edge #4] Group replies must target the GROUP,
+              // not the sender. On inbound group frames chat.js sets
+              // to_id = groupId; routing by fromId mis-delivered every
+              // group reply into the sender's DM (GROUP-AT-OK bug).
+              const replyTargetId = isGroup
+                ? (msg.to_id || msg.group_id || msg.groupId || fromId)
+                : fromId;
               let textContent = msg.content || msg.text || "";
 
               // [FIX v3.16] Use channelRuntime.inbound.run() pattern (same as
@@ -466,7 +473,7 @@ _plugin.gateway = {
                 accountId,
                 peer: {
                   kind: isGroup ? "group" : "direct",
-                  id: fromId,
+                  id: replyTargetId,
                 },
               });
               const sessionKey = route.sessionKey;
@@ -482,7 +489,7 @@ _plugin.gateway = {
               let streamStarted = false;
               let streamEnded = false;
               let streamChunksSent = 0;
-              const streamTarget = fromId;
+              const streamTarget = replyTargetId;
               let accumulatedText = "";
 
               // AbortController for this turn — allows real-time interruption
@@ -503,7 +510,7 @@ _plugin.gateway = {
                   console.log("[AICQ Channel] endStreamSafe: no chunks sent, skipping stream_end");
                   if (accumulatedText && runtime.chat) {
                     try {
-                      await runtime.chat.sendMessage(agentId, streamTarget, accumulatedText, { isGroup: false });
+                      await runtime.chat.sendMessage(agentId, streamTarget, accumulatedText, { isGroup });
                     } catch (e2) {
                       console.error("[AICQ Channel] Fallback sendMessage failed:", e2.message);
                     }
@@ -516,7 +523,7 @@ _plugin.gateway = {
                   console.warn("[AICQ Channel] endStream failed:", e.message);
                   if (accumulatedText && runtime.chat) {
                     try {
-                      await runtime.chat.sendMessage(agentId, streamTarget, accumulatedText, { isGroup: false });
+                      await runtime.chat.sendMessage(agentId, streamTarget, accumulatedText, { isGroup });
                     } catch (e2) {
                       console.error("[AICQ Channel] Fallback sendMessage failed:", e2.message);
                     }
@@ -553,8 +560,8 @@ _plugin.gateway = {
                       },
                       conversation: {
                         kind: isGroup ? "group" : "direct",
-                        id: fromId,
-                        label: fromId,
+                        id: replyTargetId,
+                        label: replyTargetId,
                       },
                       route: {
                         agentId: route.agentId,
@@ -562,7 +569,7 @@ _plugin.gateway = {
                         routeSessionKey: sessionKey,
                         dispatchSessionKey: sessionKey,
                       },
-                      reply: { to: `aicq:${fromId}` },
+                      reply: { to: `aicq:${replyTargetId}` },
                       message: {
                         rawBody: textContent,
                         commandBody: textContent,
@@ -584,7 +591,7 @@ _plugin.gateway = {
                       recordInboundSession: session.recordInboundSession,
                       dispatchReplyWithBufferedBlockDispatcher: reply.dispatchReplyWithBufferedBlockDispatcher,
                       delivery: {
-                        durable: () => ({ to: fromId }),
+                        durable: () => ({ to: replyTargetId }),
                         deliver: async (payload) => {
                           if (!runtime.chat || !payload.text) return { visibleReplySent: false };
                           if (streamState.cancelled) {
@@ -593,6 +600,13 @@ _plugin.gateway = {
                           }
                           await ensureStreamStart();
                           accumulatedText += payload.text;
+                          // [FIX v3.16.3 edge #4] The stream-chunk API is DM-only
+                          // (server stream frames address a friend id). For groups
+                          // we accumulate here and endStreamSafe() falls back to a
+                          // single sendMessage(isGroup: true) when no chunks were
+                          // streamed — one clean group message instead of a
+                          // mis-routed DM.
+                          if (isGroup) return { visibleReplySent: true };
                           const text = payload.text;
                           const CHUNK_SIZE = 20;
                           for (let i = 0; i < text.length; i += CHUNK_SIZE) {
@@ -626,7 +640,7 @@ _plugin.gateway = {
                         abortSignal: turnAbortController.signal,
                         onToolResult: async (payload) => {
                           try {
-                            if (payload?.text) {
+                            if (payload?.text && !isGroup) {
                               await runtime.chat.sendStreamChunk(
                                 agentId,
                                 streamTarget,
@@ -642,6 +656,7 @@ _plugin.gateway = {
                         },
                         onAgentToolResult: (event) => {
                           try {
+                            if (isGroup) return;
                             const toolData = {
                               name: event.toolName,
                               input: event.result,

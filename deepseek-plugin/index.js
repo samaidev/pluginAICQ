@@ -209,7 +209,7 @@ async function ensureResidentAgent(ctx, config) {
   try {
     // {{model}} prompt variable (deployment:persona section) resolves from
     // agentOptions.model — omit it and system-prompt assembly throws UNKNOWN.
-    const defaultModel = config.model || RESIDENT_MODEL
+    const defaultModel = resolveResidentModel(ctx, config)
     const agentOptions = defaultModel ? { model: defaultModel } : {}
     const published = await ctx.agents.create({ sessionId, agentOptions })
     // agents.create() resolves to { agent, dispose } — unwrap the live machine.
@@ -228,6 +228,22 @@ async function ensureResidentAgent(ctx, config) {
  * Route one inbound AICQ message into an agent's inbox as durable user input.
  * Reply routing happens on the agent's next idle transition.
  */
+
+/** [edge-fix #5C] Resolve the resident agent's model without guessing:
+ * explicit config wins, then the DSH_AICQ_MODEL env override, then the
+ * model of any live agent the host already runs (UI/interactive), and
+ * only then the legacy constant. A route the host cannot serve makes the
+ * driver fail on every turn — silently, pre-rc.3. */
+function resolveResidentModel(ctx, config) {
+  if (config.model) return config.model
+  if (process.env.DSH_AICQ_MODEL) return process.env.DSH_AICQ_MODEL
+  try {
+    const live = (ctx.agents?.list?.() || []).find((a) => a?.options?.model)
+    if (live?.options?.model) return live.options.model
+  } catch { /* registry unavailable — fall through */ }
+  return RESIDENT_MODEL
+}
+
 async function deliverToAgent(ctx, config, fromId, textForAgent) {
   let agent = null
   if (config.notifyAgentId) agent = ctx.agents.get?.(config.notifyAgentId) ?? null
@@ -243,33 +259,95 @@ async function deliverToAgent(ctx, config, fromId, textForAgent) {
     }
   }
   const submittedAt = Date.now()
-  agent.followup(createUserMessage({
+  let settled = false
+  let attempts = 0
+  let sawTransition = false
+
+  const buildMessage = () => createUserMessage({
     content: [{ type: 'text', text: `[AICQ message from ${fromId}]\n${textForAgent}` }],
     source: { kind: 'plugin', plugin: name },
-  }))
+  })
+
+  const submit = () => {
+    attempts += 1
+    log(`followup submitted (attempt ${attempts}) for ${fromId}`)
+    agent.followup(buildMessage())
+  }
+
+  // [edge-fix #5A] The host wakes the driver on followup(), but a turn
+  // that fails before any assistant output (unknown model route, provider
+  // 429/500) discards the claimed input silently. Watch status
+  // transitions, retry a bounded number of times, and never leave the
+  // AICQ sender without an answer.
+  const settle = () => { settled = true; try { off?.() } catch {} try { clearInterval(watchdog) } catch {} }
 
   const off = agent.ctx.on?.('agent/status', function onStatus(payload) {
     try {
-      if (payload?.status !== 'idle') return
+      const st = payload?.status
+      if (!st || settled) return
+      sawTransition = true
+      log(`agent status -> ${st} (turn for ${fromId}, attempt ${attempts})`)
+      if (st !== 'idle') return
+
       const events = agent.session?.events ?? []
       const assistantTail = [...events].reverse()
         .find((ev) => ev.type === 'assistant/message' && ev.time >= submittedAt)
-      off?.()
-      if (!assistantTail) return
-      const blocks = assistantTail.data?.message?.content ?? []
-      const replyText = blocks
-        .filter((b) => b?.type === 'text')
-        .map((b) => b.text)
-        .join('\n')
-        .trim()
-      if (!replyText) return
-      _chat.sendMessage(_agentId, fromId, replyText, { isGroup: false })
-        .catch((e) => log(`reply send failed: ${e.message}`))
+      if (assistantTail) {
+        const blocks = assistantTail.data?.message?.content ?? []
+        const replyText = blocks
+          .filter((b) => b?.type === 'text')
+          .map((b) => b.text)
+          .join('\n')
+          .trim()
+        if (replyText) {
+          settle()
+          _chat.sendMessage(_agentId, fromId, replyText, { isGroup: false })
+            .catch((e) => log(`reply send failed: ${e.message}`))
+          return
+        }
+      }
+
+      // Idle with no assistant output for our turn.
+      const pending = !!(agent.inbox && (agent.inbox.nextTurn || agent.inbox.nextStep))
+      if (attempts < MAX_TURN_ATTEMPTS) {
+        log(`turn produced no reply (pending=${pending}); retrying (${attempts}/${MAX_TURN_ATTEMPTS})`)
+        submit()
+      } else {
+        log(`turn failed ${attempts} times for ${fromId}; notifying sender`)
+        settle()
+        _chat.sendMessage(_agentId, fromId,
+          '[AICQ] 处理失败：agent turn 连续失败（模型路由或上游限流），请稍后重试。',
+          { isGroup: false }).catch((e) => log(`failure notice send failed: ${e.message}`))
+      }
     } catch (e) {
       log(`reply routing error: ${e.message}`)
     }
   })
+
+  // [edge-fix #5A] Watchdog for the other failure shape: the wake itself
+  // is lost and NO status transition ever fires. Nudge once, then report.
+  const watchdog = setInterval(() => {
+    try {
+      if (settled) { clearInterval(watchdog); return }
+      const waited = Date.now() - submittedAt
+      if (!sawTransition && waited > 15000 && attempts === 1) {
+        log('no driver transition observed 15s after followup — nudging once')
+        submit()
+      } else if (waited > 45000) {
+        log(`no reply ${Math.round(waited / 1000)}s after followup; notifying sender`)
+        settle()
+        _chat.sendMessage(_agentId, fromId,
+          '[AICQ] 当前消息未能处理（宿主未驱动 turn），请稍后重试。',
+          { isGroup: false }).catch((e) => log(`failure notice send failed: ${e.message}`))
+      }
+    } catch { /* timer races with dispose — ignore */ }
+  }, 5000)
+  if (watchdog.unref) watchdog.unref()
+
+  submit()
 }
+
+const MAX_TURN_ATTEMPTS = 3
 
 /** Plugin entry point — Cordis waits for `inject` services before calling apply. */
 export function apply(ctx, config) {

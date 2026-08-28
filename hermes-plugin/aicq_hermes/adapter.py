@@ -265,10 +265,17 @@ class AicqPlatformAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="not connected", retryable=True)
 
         metadata = metadata or {}
-        is_group = metadata.get("is_group", False)
+        # [v1.4 edge-fix #3] The gateway's reply path never sets
+        # metadata["is_group"] (it only carries thread/notify markers), so
+        # group replies were previously delivered as broken DMs. Consult
+        # the persisted group registry as well — chat ids are remembered
+        # when group messages arrive (chat.py:remember_group) and ids with
+        # a grp_ prefix are recognized heuristically.
+        is_group = bool(metadata.get("is_group")) or self.chat.is_group_chat(chat_id)
         msg_type = metadata.get("msg_type", "text")
 
-        # Handle file/image sending
+        # Handle file/image sending (upload endpoint accepts both friend
+        # ids and group ids as `to` — verified edge test group_file_cn 201)
         file_path = metadata.get("file_path")
         if file_path and os.path.exists(file_path):
             success = await self.chat.send_file(chat_id, file_path)

@@ -8,6 +8,7 @@ chat messaging, and real-time WebSocket communication.
 import asyncio
 import json
 import logging
+import re
 from typing import Optional, Callable
 
 import aiohttp
@@ -285,6 +286,71 @@ class AicqServerClient:
             return await self._request_with_refresh(
                 "POST", f"{self.api_base}/chat/upload", data=form,
             )
+
+    async def send_group_message_rest(self, group_id: str, content: str,
+                                      msg_type: str = "text") -> dict:
+        """Send a group message via the authoritative REST endpoint.
+
+        [v1.4 edge-fix #3] ``POST /groups/:id/messages`` persists the
+        message and fans it out to every member — this is the delivery
+        path used by the aicq.me web app and the integration guide's
+        admin-group-reply flow. The WS ``group_message`` frame is only a
+        fire-and-forget relay, so groups are delivered REST-first.
+        """
+        return await self._request_with_refresh(
+            "POST", f"{self.api_base}/groups/{group_id}/messages",
+            json={"data": {"type": msg_type, "content": content}},
+        )
+
+    async def download_file(self, file_url: str, max_bytes: int = 64 * 1024 * 1024):
+        """Download a file served by the AICQ server.
+
+        ``file_url`` is typically ``/api/v1/chat/files/:id`` (one-time
+        download URL found on inbound file/image messages as
+        ``media_url``). Accepts absolute URLs too. Returns
+        ``(bytes, filename_or_empty)`` where the filename comes from the
+        Content-Disposition header when present.
+
+        [v1.4 edge-fix #2] Inbound files/images were previously ignored
+        entirely; this helper gives the chat manager the same download
+        capability the openclaw/dsh plugins have.
+        """
+        url = file_url if file_url.startswith("http") else f"{self.server_url}{file_url}"
+        session = await self._get_session()
+        headers = self._auth_headers()
+
+        async with session.get(url, headers=headers) as resp:
+            if resp.status == 401 and self.jwt_token:
+                # JWT expired — refresh once and retry (mirror _request_with_refresh)
+                logger.info("JWT expired (401) on file download, refreshing token...")
+                try:
+                    await self.login_agent(self._current_agent_id)
+                except Exception as e:
+                    raise RuntimeError(f"file download auth failed: {e}")
+                headers = self._auth_headers()
+                async with session.get(url, headers=headers) as retry_resp:
+                    if retry_resp.status != 200 and retry_resp.status != 201:
+                        raise RuntimeError(f"file download failed: HTTP {retry_resp.status}")
+                    buf = await retry_resp.read()
+                    disp = retry_resp.headers.get("Content-Disposition", "")
+            elif resp.status != 200 and resp.status != 201:
+                raise RuntimeError(f"file download failed: HTTP {resp.status} for {url}")
+            else:
+                buf = await resp.read()
+                disp = resp.headers.get("Content-Disposition", "")
+
+        if len(buf) > max_bytes:
+            raise RuntimeError(f"file too large: {len(buf)} bytes")
+
+        # Content-Disposition: attachment; filename="x.png" (RFC 5987 safest best-effort)
+        name = ""
+        m = re.search(r"filename\*=(?:UTF-8'')\"?([^\";]+)", disp) or \
+            re.search(r'filename="([^"]+)"', disp) or \
+            re.search(r"filename=([^;]+)", disp)
+        if m:
+            from urllib.parse import unquote
+            name = unquote(m.group(1).strip().strip('"')).strip()
+        return buf, name
 
     # ── WebSocket ───────────────────────────────────────────────────────
 

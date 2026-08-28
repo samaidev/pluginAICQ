@@ -120,14 +120,27 @@ class ChatManager {
     const identity = this.identity.loadAgent(agentId);
 
     if (isGroup) {
-      // Group message via WebSocket
-      const sent = this.server.sendWS({
+      // [FIX edge #4b] WS group frame is the proven live fan-out path
+      // (REST POST /groups/:id/messages does not exist server-side —
+      // Gin 404 for every account). REST is only a last-resort attempt
+      // for future server versions.
+      let sent = this.server.sendWS({
         type: 'group_message',
         groupId: targetId,
         content,
         msgType: type,
         mentions,
       });
+      if (!sent) {
+        try {
+          await this.server._request('POST', `/groups/${targetId}/messages`, {
+            data: { type, content, ...(mentions && mentions.length ? { mentions } : {}) },
+          });
+          sent = true;
+        } catch (e) {
+          console.warn('[Chat] REST group fallback failed:', e.message);
+        }
+      }
 
       // Save locally
       const msg = this.db.saveMessage({

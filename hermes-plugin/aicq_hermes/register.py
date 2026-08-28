@@ -80,6 +80,16 @@ def register(ctx):
         check_fn=check_requirements,
         validate_config=validate_config,
         required_env=["AICQ_SERVER_URL", "AICQ_MASTER_NUMBER"],
+        # [v1.4 edge-fix #1] User authorization hooks — without these the
+        # gateway has no way to whitelist AICQ senders, so every inbound DM
+        # was rejected with "Unauthorized user" unless the global
+        # GATEWAY_ALLOW_ALL_USERS escape hatch was set. Registering
+        # allowed_users_env / allow_all_env restores parity with every
+        # built-in platform (see plugins/platforms/*/adapter.py):
+        #   AICQ_ALLOWED_USERS=1000009,1000010   comma-separated allowlist
+        #   AICQ_ALLOW_ALL_USERS=1               accept any friend
+        allowed_users_env="AICQ_ALLOWED_USERS",
+        allow_all_env="AICQ_ALLOW_ALL_USERS",
         # [v1.3] Shown by hermes setup/status when check_fn reports missing deps.
         install_hint="pip install aiohttp pynacl websockets  (or reinstall: pip install -U aicq-hermes)",
         # [v1.3] Real connection state for `hermes status` instead of the
