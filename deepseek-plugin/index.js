@@ -527,12 +527,19 @@ export function apply(ctx, config) {
           // the server-side account (ai_xxxxxxxx) is what senders actually
           // @mention — check both.
           const serverAid = _serverClient && _serverClient.serverAccountId
+          // [edge-fix #12 hardening] the server used to strip the mentions
+          // array entirely (fixed server-side 2026-08-28); while older
+          // builds are still deployed, also scan the content for the agent
+          // display name — mirrors chat.js's own isMentioned heuristic.
+          const agentName = (_identity && _identity.loadAgent
+            && _identity.loadAgent(_agentId) && _identity.loadAgent(_agentId).name) || ''
           const mentioned = (Array.isArray(msg.mentions)
             && (msg.mentions.includes(_agentId)
               || msg.mentions.includes('all')
               || (serverAid && msg.mentions.includes(serverAid))))
             || text.includes('@' + _agentId)
             || (serverAid && text.includes('@' + serverAid))
+            || (agentName && text.includes('@' + agentName))
             || text.includes('@all')
           if (!mentioned && process.env.DSH_AICQ_GROUP_ALL !== '1') {
             log(`group message from ${fromId} in ${msg.target_id}: not mentioned, skipping`)
