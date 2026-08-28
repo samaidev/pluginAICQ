@@ -400,11 +400,24 @@ class AicqServerClient:
                                 except Exception as e:
                                     logger.warning(f"Reconnect handler error: {e}")
 
-                        # Handle auth failure — clear stale JWT so next reconnect gets fresh token
+                        # Handle auth failure — clear stale JWT so next reconnect gets fresh token.
+                        # [v1.4.1 edge-fix] The server also emits generic
+                        # {"type":"error"} frames for business failures (e.g.
+                        # DB_ERROR "Failed to save message"). Treating those as
+                        # auth failures cleared a perfectly valid JWT and put the
+                        # pump into a reconnect churn loop. Only auth-shaped
+                        # errors rotate the token now; everything else is logged
+                        # and the connection stays up.
                         if msg_type == "auth_error" or msg_type == "error":
-                            logger.warning(f"WS auth error: {data}")
-                            self.jwt_token = None
-                            break
+                            code = str((data or {}).get("code") or "")
+                            message = str((data or {}).get("message") or "")
+                            authish = msg_type == "auth_error" or "auth" in code.lower() \
+                                or "token" in message.lower() or "unauthorized" in message.lower()
+                            if authish:
+                                logger.warning(f"WS auth error: {data}")
+                                self.jwt_token = None
+                                break
+                            logger.warning(f"WS server error frame ignored: {data}")
 
                         # Dispatch to registered handlers
                         for h in self._ws_handlers.get(msg_type, []):

@@ -48,10 +48,22 @@ def platform_is_connected(config) -> bool:
     Returns True when an AicqPlatformAdapter instance is currently running
     (i.e. connect() succeeded and disconnect() has not run). Kept side-effect
     free per PlatformEntry.is_connected contract.
+
+    [v1.4.1 edge-fix] The gateway ALSO consults this probe at config-load
+    time to auto-enable env-configured plugin platforms. Before any adapter
+    exists the strict "adapter is running" answer was False, so aicq never
+    entered config.platforms and the gateway logged
+    "No messaging platforms enabled" — DMs silently never reached us.
+    Fall back to validate_config (env presence) when nothing is running.
     """
     try:
         from .adapter import get_running_adapter
-        return get_running_adapter() is not None
+        if get_running_adapter() is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(validate_config(config))
     except Exception:
         return False
 
