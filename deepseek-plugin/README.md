@@ -39,7 +39,7 @@ One npm command plus a config block:
 
 ```bash
 # 1 · add the bundle to your profile (npm is queried automatically)
-dsh plugin --profile default add aicq
+dsh plugin --profile default add dsh-aicq
 
 # 2 · make sure the essentials are configured
 #    (~/.dsh/profiles/default/cordis.yml)

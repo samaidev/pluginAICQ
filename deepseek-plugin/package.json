@@ -1,7 +1,7 @@
 {
   "name": "dsh-aicq",
-  "version": "0.1.9",
-  "description": "AICQ End-to-end Encrypted Chat plugin for DeepSeek Harness (DSH) — registers aicq_* chat/friend/file/group tools and drives the agent from inbound AICQ messages",
+  "version": "0.1.10",
+  "description": "AICQ End-to-end Encrypted Chat plugin for DeepSeek Harness (DSH) \u2014 registers aicq_* chat/friend/file/group tools and drives the agent from inbound AICQ messages",
   "type": "module",
   "main": "./index.js",
   "files": [

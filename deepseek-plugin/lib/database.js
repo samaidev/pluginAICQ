@@ -467,8 +467,14 @@ class PluginDatabase {
     if (this._saveTimer) {
       clearTimeout(this._saveTimer);
     }
-    this._save(); // Final save before closing
-    this.db.close();
+    // [fix 2026-08-29] init() may still be awaiting initSqlJs() when close()
+    // is called (plugin dispose during startup): this.db is null then, and
+    // the unconditional _save()/db.close() crashed with
+    // "Cannot read properties of null (reading 'export')".
+    if (this.db) {
+      this._save(); // Final save before closing
+      this.db.close();
+    }
   }
 }
 

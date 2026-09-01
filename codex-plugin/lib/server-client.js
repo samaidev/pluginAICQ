@@ -36,9 +36,25 @@ class ServerClient {
       opts.body = JSON.stringify(body);
     }
     const resp = await fetch(`${this.apiUrl}${path}`, opts);
-    const data = await resp.json();
+    const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      throw new Error(data.error || data.message || `HTTP ${resp.status}`);
+      // [fix 2026-08-29] the AICQ server errors come back as
+      // {"error": {"code": "...", "message": "..."}} — a nested OBJECT.
+      // The old `new Error(data.error || ...)` interpolated the object and
+      // every failure surfaced to users/models as "[object Object]".
+      const err = data.error;
+      let msg;
+      if (err && typeof err === 'object') {
+        msg = err.message || err.code;
+      } else if (typeof err === 'string' && err) {
+        msg = err;
+      } else {
+        msg = data.message;
+      }
+      const e = new Error(msg || `HTTP ${resp.status}`);
+      e.status = resp.status;
+      e.code = (err && typeof err === 'object' && err.code) || undefined;
+      throw e;
     }
     return data;
   }
@@ -230,6 +246,9 @@ class ServerClient {
 
   connectWS() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    // [fix 2026-08-29] a direct connectWS() call (non-start() path) also
+    // implies the client wants to stay connected.
+    this._running = true;
 
     const identity = this.identity.loadAgent(this.currentAgentId);
     if (!identity || !this.jwtToken) {
@@ -339,6 +358,11 @@ class ServerClient {
   }
 
   _scheduleReconnect() {
+    // [fix 2026-08-29] never reschedule after an explicit stop()/disconnect():
+    // the WS 'close' handler calls this even for intentional teardown, which
+    // left a reconnect timer (+ ping timer + open socket) keeping the host
+    // process alive forever after plugin dispose.
+    if (!this._running) return;
     if (this._reconnectTimer) return;
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
@@ -354,8 +378,10 @@ class ServerClient {
   async start(agentId) {
     try {
       await this.ensureAuth(agentId);
-      this.connectWS();
+      // [fix 2026-08-29] set _running BEFORE connecting so a fast 'close'
+      // event (e.g. server hiccup) is allowed to schedule a reconnect.
       this._running = true;
+      this.connectWS();
       console.log('[ServerClient] Started for agent:', agentId);
     } catch (e) {
       console.error('[ServerClient] Start failed:', e.message);
@@ -372,6 +398,11 @@ class ServerClient {
   }
 
   disconnect() {
+    // [fix 2026-08-29] mark stopped FIRST so the ws 'close' handler cannot
+    // schedule a zombie reconnect, and clear the ping interval here (it was
+    // only cleared in the 'close' event handler, which never fires if the
+    // socket never opened).
+    this._running = false;
     if (this.ws) {
       // SPEC 合规: offline 消息必须带 nodeId 字段
       // 见 aicqSDK/SPEC.md 第 215-219 行
@@ -383,6 +414,7 @@ class ServerClient {
       this.ws = null;
     }
     this.connected = false;
+    if (this._pingTimer) { clearInterval(this._pingTimer); this._pingTimer = null; }
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;

@@ -58,6 +58,16 @@ export const Config = Schema.object({
     .description('Auto-accept incoming friend requests'),
   notifyAgentId: Schema.string().default('')
     .description('Session id of the agent that receives inbound AICQ messages. Empty = first registered agent.'),
+  // [fix 2026-08-29] expose provider/model — ensureResidentAgent() already
+  // reads both, but they were absent from the schema so users could not
+  // configure them and the resident agent fell back to env vars only
+  // (an empty provider leaves the LLM route unresolved: every inbound
+  // message's turn fails with "模型路由或上游限流" while the same model
+  // works fine in headless mode via agent-default-model).
+  provider: Schema.string().default('')
+    .description('LLM provider route for the resident agent (must match a dsh-llm providers key, e.g. "zai"). Empty = DSH_AICQ_PROVIDER env.'),
+  model: Schema.string().default('')
+    .description('LLM model id for the resident agent (e.g. "glm-4-plus"). Empty = DSH_AICQ_MODEL env, then agent-default-model.'),
 })
 
 const PLUGIN_VERSION = (() => {
@@ -75,6 +85,15 @@ let _agentId = 'dsh-aicq'
 // exists -- WS traffic can arrive between connect() and apply()'s
 // `.then(setOnNewMessage)` window, which previously dropped those messages.
 let _onInbound = null
+// [fix 2026-08-29] dispose-during-init race guard: bump on every closeClient().
+// An in-flight ensureClient() captures its generation at start and verifies
+// it still owns the slot before publishing its instances to the module
+// scope — previously a cordis dispose between `await _db.init()` and the
+// next statement nulled the module globals mid-flight and the resumed
+// async function crashed with "Cannot read properties of undefined
+// (reading 'listIdentities')" (and PluginDatabase.close() logged
+// "Save failed: Cannot read properties of null (reading 'export')").
+let _clientGeneration = 0
 
 function log(msg) {
   console.error(`[dsh-aicq] ${msg}`)
@@ -83,6 +102,7 @@ function log(msg) {
 async function ensureClient(config) {
   if (_ready) return _ready
 
+  const generation = ++_clientGeneration
   _ready = (async () => {
     const dataDir = config.dataDir && String(config.dataDir).trim()
       ? path.resolve(String(config.dataDir))
@@ -92,42 +112,66 @@ async function ensureClient(config) {
     fs.mkdirSync(uploadsDir, { recursive: true })
     fs.mkdirSync(userfilesDir, { recursive: true })
 
-    _db = new PluginDatabase(dataDir)
-    await _db.init()
+    // [fix 2026-08-29] build on LOCAL references; module globals are only
+    // published after the whole startup succeeds and the generation is
+    // still current, so a closeClient() during any await below can no longer
+    // leave the module scope half-initialized.
+    const db = new PluginDatabase(dataDir)
+    await db.init()
     log(`SQLite store ready at ${dataDir}`)
 
-    _identity = new IdentityManager(_db)
-    if (_identity.listAgents().length === 0) {
-      _identity.createAgent(_agentId, 'AICQ DSH Agent')
+    const identity = new IdentityManager(db)
+    const agentId0 = _agentId
+    if (identity.listAgents().length === 0) {
+      identity.createAgent(agentId0, 'AICQ DSH Agent')
     }
-    const agents = _identity.listAgents()
-    _agentId = agents.length > 0 ? agents[0].agent_id : _agentId
+    const agents = identity.listAgents()
+    const resolvedAgentId = agents.length > 0 ? agents[0].agent_id : agentId0
 
-    _serverClient = new ServerClient(_identity, _db, config.serverUrl)
-    _handshake = new HandshakeManager(_identity, _serverClient, _db)
-    _chat = new ChatManager(_identity, _serverClient, _db, uploadsDir, userfilesDir)
+    const serverClient = new ServerClient(identity, db, config.serverUrl)
+    const handshake = new HandshakeManager(identity, serverClient, db)
+    const chat = new ChatManager(identity, serverClient, db, uploadsDir, userfilesDir)
     if (_onInbound) {
-      _chat.setOnNewMessage(_onInbound)
+      chat.setOnNewMessage(_onInbound)
     }
 
-    await _serverClient.ensureAuth(_agentId)
-    log(`authenticated as ${_agentId} @ ${config.serverUrl}`)
+    await serverClient.ensureAuth(resolvedAgentId)
+    log(`authenticated as ${resolvedAgentId} @ ${config.serverUrl}`)
 
-    if (typeof _serverClient.start === 'function') {
-      await _serverClient.start(_agentId)
+    if (typeof serverClient.start === 'function') {
+      await serverClient.start(resolvedAgentId)
     } else {
-      _serverClient.connectWS()
+      serverClient.connectWS()
     }
 
-    if (config.autoAcceptFriends && typeof _chat.setOnAutoAccept === 'function') {
-      _chat.setOnAutoAccept(async (req) => {
+    if (config.autoAcceptFriends && typeof chat.setOnAutoAccept === 'function') {
+      chat.setOnAutoAccept(async (req) => {
         try {
-          await _handshake.acceptRequest(_agentId, req.request_id ?? req.session_id ?? req.id)
+          await handshake.acceptRequest(resolvedAgentId, req.request_id ?? req.session_id ?? req.id)
         } catch (e) {
           log(`auto-accept failed: ${e.message}`)
         }
       })
     }
+
+    // [fix 2026-08-29] a closeClient() fired while we were initializing —
+    // abandon this attempt (its resources are torn down by closeClient via
+    // the generation bump signalling) and let tool callers retry cleanly.
+    if (generation !== _clientGeneration) {
+      try {
+        if (typeof serverClient.stop === 'function') serverClient.stop()
+        else if (typeof serverClient.disconnect === 'function') serverClient.disconnect()
+      } catch {}
+      try { db.close() } catch {}
+      throw new Error('client closed during startup; will retry on next tool call')
+    }
+
+    _db = db
+    _identity = identity
+    _serverClient = serverClient
+    _handshake = handshake
+    _chat = chat
+    _agentId = resolvedAgentId
 
     if (config.masterNumber) {
       addFriendByNumber(config.masterNumber).catch((e) =>
@@ -139,6 +183,9 @@ async function ensureClient(config) {
 }
 
 function closeClient() {
+  // [fix 2026-08-29] bump first so any in-flight ensureClient() aborts and
+  // never publishes its instances after this teardown.
+  _clientGeneration++
   try {
     if (_serverClient) {
       if (typeof _serverClient.stop === 'function') _serverClient.stop()
